@@ -475,15 +475,23 @@ export const ProjectSettingsProvider: React.FC<ProviderProps> = ({
   // switcher writes it, OverviewTab/MonitoringTab read it to refetch per-domain.
   // Defaults to the primary and snaps back to it when the current pick drops out
   // of the project's domains. (The /logs view keeps its own separate selection.)
-  const [selectedDomain, setSelectedDomain] = useState("");
-  useEffect(() => {
+  //
+  // DERIVED on render, not synced in an effect. Child effects run before the
+  // parent's, so an effect left `selectedDomain` at "" for the whole first render
+  // in which the tabs mount: every analytics consumer fired a domain-LESS request
+  // (which the API answers by fanning out over every tracked domain, one edge
+  // round-trip each), then a second, scoped one a render later — the first
+  // discarded. On a multi-domain project that wasted request is also the slow one,
+  // and the request that matters queues behind it until the client's 15s timeout
+  // aborts it (#396).
+  const [domainPick, setDomainPick] = useState<string | null>(null);
+  const selectedDomain = useMemo(() => {
     const available = (projectData.domains || [])
       .map((d: any) => d?.domain)
       .filter((d: unknown): d is string => typeof d === "string" && d.length > 0);
-    setSelectedDomain((current) =>
-      current && available.includes(current) ? current : domain,
-    );
-  }, [domain, projectData.domains]);
+    return domainPick && available.includes(domainPick) ? domainPick : domain;
+  }, [domainPick, domain, projectData.domains]);
+  const setSelectedDomain = useCallback((next: string) => setDomainPick(next || null), []);
 
   // Derived: do we have multi-service rendering paths to enable?
   // projectData hint OR serviceCount > 1 OR loaded services > 1.

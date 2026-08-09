@@ -19,7 +19,7 @@
  */
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { api, ApiError, endpoints, projectsApi } from "@/lib/api";
+import { api, ApiError, endpoints, isAbortError, isNetworkError, projectsApi } from "@/lib/api";
 
 /**
  * Sentinel error message emitted by `fetchProjectInfo` when the API returns
@@ -228,6 +228,79 @@ function subscribeRevision(id: string, listener: () => void): () => void {
   };
 }
 
+// ─── Load + transient retry ────────────────────────────────────────────────
+
+/**
+ * How many times a TRANSIENT failure (an abort, or a network-level blip) is
+ * retried before it is reported as an error. Two rides out the cases that
+ * actually happen — the client's request timeout firing on a request that was
+ * deduped onto an older in-flight one, a reconnect — without hammering an
+ * endpoint that is genuinely down.
+ */
+const TRANSIENT_RETRY_LIMIT = 2;
+/** Backoff before retry N (1-based): 400ms, then 800ms. */
+const TRANSIENT_RETRY_DELAY_MS = 400;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+export type EndpointResult<T> = { kind: "ready"; data: T } | { kind: "error"; message: string };
+
+/**
+ * Run ONE endpoint load against the dedup cache, retrying transient failures.
+ *
+ * An abort is not an answer about the data. `api.get` aborts on its own request
+ * timeout, and that AbortController is shared by every caller deduped onto the
+ * same in-flight GET — so a consumer can be aborted after only a fraction of the
+ * budget it thinks it has, on an endpoint that answers fine when asked again.
+ * Reporting that rejection as "loaded, and empty" is what rendered a busy
+ * project's overview as four zeros plus "No traffic data yet" (#396): the
+ * effect's deps don't change afterwards, so nothing ever refetched and the zeros
+ * stayed until a full page reload. Retry instead, leaving the caller in its
+ * loading state (skeletons) meanwhile.
+ *
+ * Exported for tests: the dashboard has no React test harness (no jsdom, no
+ * testing-library), so this is the seam where the retry is exercised.
+ */
+export async function loadEndpoint<T>(
+  key: string,
+  cache: Map<string, CacheEntry<T>>,
+  fetcher: (key: string) => Promise<T>,
+  // Injectable so tests don't wait on real timers.
+  delay: (ms: number) => Promise<void> = sleep,
+): Promise<EndpointResult<T>> {
+  for (let attempt = 0; ; attempt++) {
+    const cached = cache.get(key);
+    // A concurrent consumer may have resolved it while we were backing off.
+    if (cached?.kind === "ready") return { kind: "ready", data: cached.data };
+
+    let promise: Promise<T>;
+    if (cached?.kind === "loading") {
+      // Already in flight from a concurrent mount — subscribe to it.
+      promise = cached.promise;
+    } else {
+      // Cold — fire a new fetch and register it so concurrent mounts share.
+      promise = fetcher(key);
+      cache.set(key, { kind: "loading", promise });
+    }
+
+    try {
+      const data = await promise;
+      cache.set(key, { kind: "ready", data });
+      return { kind: "ready", data };
+    } catch (err) {
+      // Errors are NOT cached — drop the entry so the retry below (or a future
+      // mount / refresh) re-fires the request. Otherwise a transient 5xx
+      // permanently bricks the page until full reload.
+      cache.delete(key);
+      if ((isAbortError(err) || isNetworkError(err)) && attempt < TRANSIENT_RETRY_LIMIT) {
+        await delay(TRANSIENT_RETRY_DELAY_MS * (attempt + 1));
+        continue;
+      }
+      return { kind: "error", message: err instanceof Error ? err.message : "Request failed" };
+    }
+  }
+}
+
 // ─── Internal generic hook ─────────────────────────────────────────────────
 
 function useEndpoint<T>(
@@ -291,34 +364,19 @@ function useEndpoint<T>(
     let cancelled = false;
     setState((prev) => ({ ...prev, isLoading: true, error: null }));
 
-    let promise: Promise<T>;
-    if (cached?.kind === "loading") {
-      // Already in flight from a concurrent mount — subscribe to it.
-      promise = cached.promise;
-    } else {
-      // Cold — fire a new fetch and register it so concurrent mounts share.
-      promise = fetcher(id);
-      cache.set(id, { kind: "loading", promise });
-    }
-
-    promise
-      .then((data) => {
-        cache.set(id, { kind: "ready", data });
-        // Guard: don't write A's result into B's state if id has
-        // changed since the effect started. Both flags together cover
-        // synchronous (cancelled) and racy (idRef mismatch) cases.
-        if (cancelled || idRef.current !== id) return;
-        setState({ data, isLoading: false, error: null });
-      })
-      .catch((err: unknown) => {
-        // Errors are NOT cached — drop the entry so a future mount /
-        // refresh re-fires the request. Otherwise a transient 5xx
-        // permanently bricks the page until full reload.
-        cache.delete(id);
-        if (cancelled || idRef.current !== id) return;
-        const message = err instanceof Error ? err.message : "Request failed";
-        setState({ data: null, isLoading: false, error: message });
-      });
+    // Aborts and network blips are retried inside; `loadEndpoint` only settles
+    // once there is a real answer to render.
+    loadEndpoint(id, cache, fetcher).then((result) => {
+      // Guard: don't write A's result into B's state if id has
+      // changed since the effect started. Both flags together cover
+      // synchronous (cancelled) and racy (idRef mismatch) cases.
+      if (cancelled || idRef.current !== id) return;
+      if (result.kind === "ready") {
+        setState({ data: result.data, isLoading: false, error: null });
+      } else {
+        setState({ data: null, isLoading: false, error: result.message });
+      }
+    });
 
     return () => {
       cancelled = true;
