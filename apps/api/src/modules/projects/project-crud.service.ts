@@ -15,6 +15,8 @@ import {
   isReleaseProvider,
   isBehind,
   GITHUB_REPO,
+  githubCloneUrl,
+  asRemoteGitUrl,
   normalizeRollbackWindow,
   normalizeAliasStrict,
   aliasConflictsWithSiblings,
@@ -322,9 +324,14 @@ export async function enrichProjectsBatch(
   });
 }
 
-function projectGitUrl(owner?: string | null, repo?: string | null) {
-  return owner && repo ? `https://github.com/${owner}/${repo}.git` : undefined;
-}
+// ─── The project's remote ────────────────────────────────────────────────────
+//
+// `gitUrl` is the STORED source of truth every clone site reads back
+// (`resolveSourceRemote` → `buildConfigSnapshot`), not a decoration. So the
+// write paths below (`githubCloneUrl`) are where GitHub's URL shape is decided,
+// and a non-GitHub project needs its remote PERSISTED here — never a second
+// builder at each reader. The shape itself lives in @repo/core, beside the
+// reader that falls back to it for rows written before it was read back.
 
 function resolveProjectSource(data: TCreateProjectBody) {
   // Release/dist source: a prebuilt dist, no git repo and no stored localPath
@@ -348,7 +355,7 @@ function resolveProjectSource(data: TCreateProjectBody) {
     gitOwner,
     gitRepo,
     gitProvider: isRelease ? "release" : safeLocalPath ? "local" : (data.gitProvider ?? "github"),
-    gitUrl: projectGitUrl(gitOwner, gitRepo),
+    gitUrl: githubCloneUrl(gitOwner, gitRepo),
     releaseSource: isRelease ? ((data.releaseSource as ReleaseSource | undefined) ?? null) : null,
   };
 }
@@ -755,10 +762,19 @@ export async function createServicesProjectWithId(opts: {
   gitOwner?: string | null;
   gitRepo?: string | null;
   gitBranch?: string | null;
+  /** Recovered REMOTE (re-import). Also off an unvalidated manifest, so it
+   *  arrives already narrowed by `asRemoteGitUrl` — see the call site. Kept
+   *  verbatim when present: rebuilding it from owner/repo is exactly how a
+   *  non-github project got silently repointed at github.com. */
+  gitUrl?: string | null;
   autoDeploy?: boolean;
 }): Promise<Project> {
   await assertProjectQuota(opts.organizationId);
   const slug = await uniqueProjectSlug(opts.organizationId, opts.slug);
+
+  // Prefer the recovered remote; fall back to the github builder for a manifest
+  // written before the field existed (its projects were all github by definition).
+  const gitUrl = asRemoteGitUrl(opts.gitUrl) ?? githubCloneUrl(opts.gitOwner, opts.gitRepo);
 
   const group = await repos.projectGroup.create({
     organizationId: opts.organizationId,
@@ -767,7 +783,7 @@ export async function createServicesProjectWithId(opts: {
     gitProvider: opts.gitProvider ?? undefined,
     gitOwner: opts.gitOwner ?? undefined,
     gitRepo: opts.gitRepo ?? undefined,
-    gitUrl: projectGitUrl(opts.gitOwner, opts.gitRepo),
+    gitUrl,
   });
 
   try {
@@ -785,7 +801,7 @@ export async function createServicesProjectWithId(opts: {
       gitOwner: opts.gitOwner ?? undefined,
       gitRepo: opts.gitRepo ?? undefined,
       gitBranch: opts.gitBranch ?? "main",
-      gitUrl: projectGitUrl(opts.gitOwner, opts.gitRepo),
+      gitUrl,
       autoDeploy: !!opts.autoDeploy,
       framework: "unknown", // services project — the stack lives on each service row
       packageManager: "npm",
@@ -837,7 +853,7 @@ export async function linkProjectRepo(
     return { ok: false, code: "not_found" };
   }
 
-  const gitUrl = projectGitUrl(owner, repo);
+  const gitUrl = githubCloneUrl(owner, repo);
   const defaultBranch = await resolveDefaultBranch(ctx, owner, repo, input.branch);
 
   // Typed, not `Record<string, unknown>`: the repo linker is a git-source WRITE

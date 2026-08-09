@@ -16,6 +16,8 @@
  * token, which is runtime state, not config.
  */
 
+import { isGithubProvider, type SourceProvider } from "@repo/core";
+
 export interface ClonePlanInput {
   /** Resolved deploy target for this build. */
   effectiveTarget: "local" | "server" | "cloud";
@@ -40,15 +42,46 @@ export interface ClonePlanInput {
    *  real SSH tunnel + a local `gh` identity, probed at runtime by the pipeline /
    *  resolver — this only expresses the operator's preference. */
   forwardGitCredentials?: boolean | null;
-  /** Repo is hosted on GitHub (`gitProvider === "github"` / has a parsed owner) →
-   *  the server can download the source tarball directly (source-tarball.ts), so
-   *  docker can acquire on the server without the explicit `cloneStrategy ===
-   *  "server"` opt-in, skipping the orchestrator clone + context transfer.
-   *  Whether it ACTUALLY runs on the server still depends on a shippable
-   *  credential (resolved later; degrades to an api-host clone otherwise). The
-   *  adapter re-validates the URL (github + https) before downloading and falls
-   *  back to clone. Local/imported projects → false → unchanged. */
+  /** Repo is hosted on GitHub AND has an https remote → the server can download
+   *  the source tarball directly (source-tarball.ts), so docker can acquire on
+   *  the server without the explicit `cloneStrategy === "server"` opt-in,
+   *  skipping the orchestrator clone + context transfer. Whether it ACTUALLY
+   *  runs on the server still depends on a shippable credential (resolved
+   *  later; degrades to an api-host clone otherwise). The adapter re-validates
+   *  the URL (github + https) before downloading and falls back to clone.
+   *  Local/imported/other-provider projects → false → unchanged.
+   *
+   *  Derive it with {@link repoIsGithubSource} — never inline, or preflight and
+   *  the pipeline drift apart again. */
   repoIsGithub?: boolean;
+}
+
+/**
+ * THE derivation of `repoIsGithub`, shared by preflight and the build pipeline.
+ *
+ * Both used to compute it as `!!project.gitOwner` — "has a parsed owner", which
+ * says nothing about the provider. That was fine while github was the only
+ * provider that ever populated the column; it stops being fine the moment a
+ * GitLab row carries an owner, because the GitHub tarball endpoint would then be
+ * chosen for a remote that doesn't serve it. Read the PROVIDER column (a checked
+ * `SourceProvider` union) instead, exactly as clone-plan's docs always claimed.
+ *
+ * The remote is required as well as the provider: the fast path's whole payload
+ * is the URL (`githubTarballUrl(repoUrl, ref)`), and its clone fallback is
+ * `git clone <repoUrl>`. A "github" project with no remote — the column default
+ * on an adopted-docker / image-only project — has neither, so answering `true`
+ * for it would ship a docker deploy to an on-server acquisition of nothing.
+ *
+ * `isGithubProvider` (not a bare `=== "github"`) so a legacy row with a NULL
+ * provider column keeps the fast path it has today, and so this reads the
+ * column exactly the way `resolveSourceRemote` produced the URL being tested.
+ */
+export function repoIsGithubSource(input: {
+  gitProvider?: SourceProvider | null;
+  /** The project's resolved remote (`resolveSourceRemote` → snapshot.repoUrl). */
+  repoUrl?: string | null;
+}): boolean {
+  return isGithubProvider(input.gitProvider) && !!input.repoUrl?.trim();
 }
 
 export interface ClonePlan {

@@ -930,6 +930,9 @@ export async function reimportOpenshipProject(opts: {
     gitOwner: group.source?.gitOwner ?? undefined,
     gitRepo: group.source?.gitRepo ?? undefined,
     gitBranch: group.source?.gitBranch ?? undefined,
+    // Already narrowed (asRemoteGitUrl) in reconcileOpenshipProjects. Null on a
+    // pre-gitUrl manifest → the create path rebuilds the GitHub URL, unchanged.
+    gitUrl: group.source?.gitUrl ?? undefined,
   });
 
   // Re-import preserves the original service names (from the manifest/labels),

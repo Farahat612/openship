@@ -174,10 +174,19 @@ What's already a seam (reuse, don't rebuild):
 
 What actually hardcodes GitHub — each is a decision, not a rename:
 
-- [ ] **The clone URL is BUILT, not stored**: `https://github.com/${owner}/${repo}.git`
+- [x] **The clone URL is BUILT, not stored**: `https://github.com/${owner}/${repo}.git`
       (`modules/projects/project-crud.service.ts:219`). Any non-GitHub project
       needs its remote persisted (or a per-provider URL builder). Smallest diff,
       widest blast radius — do it first.
+      *Done*: `gitUrl` is now the STORED source of truth. `resolveSourceRemote`
+      (`packages/core/src/project-source.ts`) reads it, with the GitHub builder
+      as a provider-gated fallback for rows written before it was read back;
+      `buildConfigSnapshot` is the one place a deploy resolves a remote. The
+      server manifest carries `gitUrl` (narrowed by `asRemoteGitUrl` on
+      re-import) so recovery no longer repoints a non-GitHub project at
+      github.com, and the tarball fast path is gated on the provider column
+      (`repoIsGithubSource`) instead of "has a gitOwner". Still missing: an HTTP
+      way to SET a custom remote — that belongs with the provider it serves.
 - [ ] **Webhooks**: `x-hub-signature-256` HMAC + GitHub's push body
       (`github.webhook.ts:127,150`, `webhook-push.ts`, `webhook-changed-files.ts`,
       `webhook-check-run.ts`). GitLab sends `X-Gitlab-Token` — a plain shared

@@ -75,6 +75,10 @@ export async function syncProjectToServerManifest(input: {
       gitOwner: project.gitOwner,
       gitRepo: project.gitRepo,
       gitBranch: project.gitBranch,
+      // The STORED remote — the one field that makes a non-GitHub project
+      // survive re-import. Without it, recovery rebuilds a github.com URL from
+      // owner/repo and the project comes back pointed at the wrong host.
+      gitUrl: project.gitUrl,
       runtimeMode: meta.runtimeMode ?? null,
       autoDeploy: project.autoDeploy,
       environmentSlug: project.environmentSlug,

@@ -25,9 +25,11 @@ import {
   getRuntimeImage,
   isReleaseProvider,
   resolveProjectVolumes,
+  resolveSourceRemote,
   type StackId,
   type DeployTarget,
   type BuildStrategy,
+  type SourceProvider,
   type StackDefinition,
   type ReleaseSource,
   type SourceKind,
@@ -124,6 +126,9 @@ export async function runDeploymentPreflight(
     ctx: RequestContext;
     composeServices?: DeployableService[];
     multiService?: boolean;
+    /** The project's source provider. Gates the GitHub-only checks (the tarball
+     *  fast path) so they're skipped for a remote GitHub doesn't serve. */
+    gitProvider?: SourceProvider | null;
     /** Git owner of the source repo. Cloud preflight uses it to verify the
      *  GitHub App is installed for this owner before the build pipeline
      *  spends resources cloning a repo it can't access. */
@@ -147,6 +152,7 @@ export async function runDeploymentPreflight(
     publicEndpoints: routeState.publicEndpoints,
     ...(opts.composeServices ? { composeServices: opts.composeServices } : {}),
     ...(opts.multiService !== undefined ? { multiService: opts.multiService } : {}),
+    ...(opts.gitProvider !== undefined ? { gitProvider: opts.gitProvider } : {}),
     ...(opts.gitOwner !== undefined ? { gitOwner: opts.gitOwner } : {}),
     ...(opts.projectId !== undefined ? { projectId: opts.projectId } : {}),
     ...(opts.appTemplateId !== undefined ? { appTemplateId: opts.appTemplateId } : {}),
@@ -356,7 +362,13 @@ export function buildConfigSnapshot(
     // shows "no cloud account connected". Set it here once, at the
     // source, where every snapshot consumer can rely on it.
     organizationId: project.organizationId,
-    repoUrl: project.gitUrl ?? "",
+    // THE remote for this deploy, and the only place it's resolved: the STORED
+    // `gitUrl` column, with the github.com builder as the fallback for rows
+    // written before the column was read back (`resolveSourceRemote`). Every
+    // clone/fetch downstream — the orchestrator clone, the on-server clone, the
+    // tarball fast path, the cloud workspace — consumes this one value, so a
+    // non-GitHub remote is a data change here and nothing else.
+    repoUrl: resolveSourceRemote(project) ?? "",
     branch: branch || project.gitBranch || (project.localPath ? "main" : ""),
     framework: project.framework!,
     buildImage: project.buildImage!,
@@ -1228,6 +1240,7 @@ export async function requestBuildAccess(ctx: RequestContext, input: BuildAccess
     ctx,
     composeServices: servicePreflightServices,
     multiService: useServicePipeline,
+    gitProvider: project.gitProvider,
     gitOwner: project.gitOwner,
     projectId: project.id,
     // An app project carries its catalog id; a never-deployed one is the only
@@ -1706,7 +1719,16 @@ export async function triggerDeployment(
   // adopted Docker migration, which builds nothing — the exemption preflight
   // already makes), and a ROLLBACK replaying pinned artifacts. Both used to be
   // refused here, before preflight could apply its own, smarter rule.
-  if (!project.gitUrl && !project.localPath && !isReleaseProvider(project.gitProvider)) {
+  //
+  // Asks `resolveSourceRemote`, not the raw column, so it agrees with the
+  // snapshot the deploy would actually get: a legacy github row whose gitUrl was
+  // never persisted still HAS a remote (rebuilt from owner/repo) and must not be
+  // refused as sourceless.
+  if (
+    !resolveSourceRemote(project) &&
+    !project.localPath &&
+    !isReleaseProvider(project.gitProvider)
+  ) {
     const sourceless = data.reuseSnapshot
       ? snapshotNeedsGitSource(data.reuseSnapshot.meta)
       : snapshotNeedsGitSource(
@@ -1818,6 +1840,7 @@ export async function triggerDeployment(
     ctx,
     composeServices: servicePreflightServices,
     multiService: useServicePipeline,
+    gitProvider: project.gitProvider,
     gitOwner: project.gitOwner,
     projectId: project.id,
     // An app project carries its catalog id; a never-deployed one is the only

@@ -93,7 +93,7 @@ import { createBuildConfig } from "./build-config";
 import { pinnedAppImage, pinnedStaticDir, snapshotNeedsGitSource } from "./pinned-artifacts";
 import { snapshotToClass } from "./deployment-class";
 import { shouldRetainArtifact } from "./rollback/restore-plan";
-import { resolveClonePlan } from "./clone-plan";
+import { repoIsGithubSource, resolveClonePlan } from "./clone-plan";
 import { collapseTerminalLogs } from "./terminal-logs";
 import { sanitizeLogsForPersistence } from "./build-log-sanitize";
 import {
@@ -710,7 +710,12 @@ async function executeBuildAndDeploy(project: Project, dep: Deployment, buildSes
       buildStrategy,
       isDesktop: plat.target === "desktop",
       forwardGitCredentials: snapshot.forwardGitCredentials,
-      repoIsGithub: !!project.gitOwner,
+      // Provider column + the resolved remote (shared derivation — preflight
+      // computes the identical value from the identical inputs).
+      repoIsGithub: repoIsGithubSource({
+        gitProvider: project.gitProvider,
+        repoUrl: snapshot.repoUrl,
+      }),
     });
     const cloneOnServer = clonePlan.runsOnServer;
     // The relay needs a real SSH reverse tunnel — `reverseForward` exists on every

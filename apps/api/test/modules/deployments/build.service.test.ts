@@ -84,6 +84,7 @@ vi.mock("../../../src/modules/deployments/smart-route", () => ({
 }));
 
 import {
+  buildConfigSnapshot,
   requestBuildAccess,
   resolveSnapshotTarget,
   triggerDeployment,
@@ -250,6 +251,72 @@ describe("resolveSnapshotTarget", () => {
     const t = await resolveSnapshotTarget(project());
     expect(t.deployTarget).toBeUndefined();
     expect(t.serverId).toBeUndefined();
+  });
+});
+
+/**
+ * `snapshot.repoUrl` is the ONE value every clone/fetch downstream consumes, so
+ * this is the read site that decides whether a non-GitHub remote is possible at
+ * all. It must prefer the STORED column and only ever rebuild a github.com URL
+ * for a row that has no stored remote AND is a GitHub project.
+ */
+describe("buildConfigSnapshot — the project's remote", () => {
+  it("uses the STORED gitUrl verbatim, whatever the host", () => {
+    const snapshot = buildConfigSnapshot(
+      baseProject({
+        localPath: null,
+        gitProvider: "gitlab",
+        gitOwner: "group",
+        gitRepo: "app",
+        gitUrl: "https://gitlab.example.com/group/app.git",
+      }) as any,
+    );
+    expect(snapshot.repoUrl).toBe("https://gitlab.example.com/group/app.git");
+  });
+
+  it("GitHub projects are byte-identical to before (stored url wins, same value)", () => {
+    const snapshot = buildConfigSnapshot(
+      baseProject({
+        localPath: null,
+        gitProvider: "github",
+        gitOwner: "oblien",
+        gitRepo: "openship",
+        gitUrl: "https://github.com/oblien/openship.git",
+      }) as any,
+    );
+    expect(snapshot.repoUrl).toBe("https://github.com/oblien/openship.git");
+  });
+
+  it("rebuilds the github url for a LEGACY github row whose gitUrl was never stored", () => {
+    const snapshot = buildConfigSnapshot(
+      baseProject({
+        localPath: null,
+        gitProvider: "github",
+        gitOwner: "oblien",
+        gitRepo: "openship",
+        gitUrl: null,
+      }) as any,
+    );
+    expect(snapshot.repoUrl).toBe("https://github.com/oblien/openship.git");
+  });
+
+  it("does NOT resurrect a remote from stale owner/repo on a local-path project", () => {
+    // An ensure() that sets localPath flips gitProvider to "local" and NULLs
+    // gitUrl but leaves gitOwner/gitRepo behind. Rebuilding from those would
+    // hand a directory-deployed project a repo to clone.
+    const snapshot = buildConfigSnapshot(
+      baseProject({ gitProvider: "local", gitOwner: "oblien", gitRepo: "openship", gitUrl: null }) as any,
+    );
+    expect(snapshot.repoUrl).toBe("");
+  });
+
+  it("stays empty for release / upload rows", () => {
+    for (const gitProvider of ["release", "upload"]) {
+      const snapshot = buildConfigSnapshot(
+        baseProject({ localPath: null, gitProvider, gitUrl: null }) as any,
+      );
+      expect(snapshot.repoUrl).toBe("");
+    }
   });
 });
 

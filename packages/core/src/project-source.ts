@@ -56,6 +56,108 @@ export function isReleaseProvider(gitProvider: SourceProvider | null | undefined
   return gitProvider === "release";
 }
 
+// ─── The project's remote ────────────────────────────────────────────────────
+//
+// `project.gitUrl` / `project_app.gitUrl` is THE stored remote. It used to be a
+// derived value nobody read — every consumer rebuilt `https://github.com/…`
+// from owner/repo — which made "any remote that isn't github.com" a code change
+// at every clone site instead of a data change. These three helpers are the
+// seam: `githubCloneUrl` BUILDS (github only), `resolveSourceRemote` READS
+// (stored first), `asRemoteGitUrl` VALIDATES an untrusted one.
+
+/**
+ * Is this source hosted on GitHub? THE one reading of the provider column, so
+ * every GitHub-specific behavior answers it identically.
+ *
+ * `null`/absent counts as github: the column defaults to "github" and rows
+ * written before it existed read back null, and those rows ARE GitHub projects.
+ * Anything else — including a provider string that is checked but not github —
+ * is not, which is the whole point of reading the column instead of inferring
+ * from "there is a gitOwner".
+ */
+export function isGithubProvider(gitProvider: SourceProvider | null | undefined): boolean {
+  return gitProvider == null || gitProvider === "github";
+}
+
+/**
+ * Build the GitHub HTTPS clone URL for an owner/repo pair.
+ *
+ * GitHub-only by construction — this is the shape github.com serves, not a
+ * generic template. It stays the value written at every GitHub link/create
+ * site, and the FALLBACK for rows stored before `gitUrl` was read back
+ * (`resolveSourceRemote`). A second provider gets its own builder (or, better,
+ * persists the remote it was given) rather than a `provider` parameter here.
+ */
+export function githubCloneUrl(
+  owner?: string | null,
+  repo?: string | null,
+): string | undefined {
+  return owner && repo ? `https://github.com/${owner}/${repo}.git` : undefined;
+}
+
+/**
+ * The remote to clone/fetch this source from: the STORED `gitUrl` when there is
+ * one, else the GitHub builder for a GitHub project.
+ *
+ * The fallback is provider-GATED on purpose. A project whose provider is no
+ * longer "github" (a `localPath` ensure sets `gitProvider="local"` and NULLs
+ * `gitUrl` while leaving the old `gitOwner`/`gitRepo` in place) must not have a
+ * github.com remote conjured back out of those stale columns — it would hand
+ * the deploy pipeline a repo URL for a project that deploys from a directory.
+ */
+export function resolveSourceRemote(source: {
+  gitProvider?: SourceProvider | null;
+  gitUrl?: string | null;
+  gitOwner?: string | null;
+  gitRepo?: string | null;
+}): string | undefined {
+  const stored = source.gitUrl?.trim();
+  if (stored) return stored;
+  return isGithubProvider(source.gitProvider)
+    ? githubCloneUrl(source.gitOwner, source.gitRepo)
+    : undefined;
+}
+
+/** Longest remote we'll accept off an untrusted source. Generous — real remotes
+ *  are ~60 chars; this only stops a pathological blob reaching a text column. */
+const MAX_REMOTE_URL_LENGTH = 512;
+
+/**
+ * Narrow an UNVALIDATED remote URL (the on-server `.openship/manifest.json`,
+ * any hand-edited JSON) to one that is safe to persist as a project's remote —
+ * or `null`, which sends the caller back to rebuilding it.
+ *
+ * The `asSourceProvider` of URLs, and needed for the same reason: a manifest is
+ * remote JSON read off a box we do not control, and this value ends up in a
+ * project row and from there in a `git clone` on a build host.
+ *
+ * Accepted: `https://host/path`, nothing else.
+ *   - https ONLY — an `ssh://`/`git@` remote needs host keys nobody has vetted
+ *     (see the known-hosts item in the provider-agnostic git plan), and a
+ *     `file://`/`ext::` remote is local-file read or command execution on the
+ *     build host.
+ *   - NO embedded credentials — `https://user:token@host/…` would persist a
+ *     secret into the DB and echo it into every clone command and build log.
+ *   - A real hostname, and no leading `-` (git would read the URL as an option;
+ *     `assembleGitClone` refuses those too, this just keeps them out of the DB).
+ */
+export function asRemoteGitUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_REMOTE_URL_LENGTH) return null;
+  if (trimmed.startsWith("-")) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:") return null;
+  if (!url.hostname) return null;
+  if (url.username || url.password) return null;
+  return trimmed;
+}
+
 /**
  * A release/dist source. Either a GitHub-Releases asset (repo + assetTemplate)
  * or an external HTTPS tarball (distUrl + sha256/sha256Url). The deployed

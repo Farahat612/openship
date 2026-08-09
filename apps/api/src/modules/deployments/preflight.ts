@@ -25,6 +25,7 @@ import {
   describeResourceFit,
   fitsCapacity,
   hasMinResources,
+  type SourceProvider,
 } from "@repo/core";
 import { cloudClient } from "../../lib/cloud/client";
 import { isCloudConnectedForOrg } from "../../lib/cloud/session";
@@ -32,7 +33,7 @@ import { runCloudPreflight, type CloudPreflightData } from "../../lib/cloud-pref
 import { isStaticService, type DeployableService } from "../../lib/deployable-service";
 import { isFullyPinned, snapshotNeedsGitSource } from "./pinned-artifacts";
 import { snapshotToClass } from "./deployment-class";
-import { relayConfigEligible, resolveClonePlan } from "./clone-plan";
+import { relayConfigEligible, repoIsGithubSource, resolveClonePlan } from "./clone-plan";
 import { hasLocalGitIdentity } from "../github/github.local-auth";
 import { isPublicRepo } from "../github/github.http";
 import { getRoutingBaseDomain } from "../../lib/routing-domains";
@@ -139,6 +140,10 @@ export interface PreflightOptions {
   }>;
   composeServices?: DeployableService[];
   multiService?: boolean;
+  /** The project's source provider (the checked `SourceProvider` column). Drives
+   *  the GitHub-only decisions preflight verifies — today the tarball fast path
+   *  via `repoIsGithubSource`. Absent ⇒ no GitHub-specific behavior is assumed. */
+  gitProvider?: SourceProvider | null;
   /** Git owner (org / user) for the project's source repo. When the
    *  deployment targets cloud, we check that the GitHub App is installed
    *  on this owner - otherwise the build will fail with a token error
@@ -1560,10 +1565,13 @@ export async function runPreflightChecks(
     buildStrategy: effectiveBuildStrategy,
     isDesktop: plat.target === "desktop",
     forwardGitCredentials: snapshot.forwardGitCredentials,
-    // GitHub projects carry a parsed gitOwner; docker acquires the source
-    // tarball on the server for them. Same structured signal the pipeline uses
-    // (`!!project.gitOwner`) so the two decisions can't drift.
-    repoIsGithub: !!opts?.gitOwner,
+    // Docker acquires the source tarball on the server for a GitHub remote.
+    // Same shared derivation the pipeline uses, off the same two inputs, so the
+    // two decisions can't drift.
+    repoIsGithub: repoIsGithubSource({
+      gitProvider: opts?.gitProvider,
+      repoUrl: snapshot.repoUrl,
+    }),
   }).dockerClonesOnServer;
   if (dockerClonesOnServer) {
     checks.push(

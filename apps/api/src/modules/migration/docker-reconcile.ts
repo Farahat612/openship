@@ -20,7 +20,7 @@ import type {
   ProxyKind,
 } from "@repo/adapters";
 import { classifyProxy } from "@repo/adapters";
-import { asSourceProvider } from "@repo/core";
+import { asRemoteGitUrl, asSourceProvider } from "@repo/core";
 import type { ComposeHealthcheck, ProxySettings, SourceProvider } from "@repo/core";
 import type { ComposeService } from "../../lib/compose-parser";
 import type { ManifestProjectEntry } from "../../lib/openship-manifest";
@@ -136,6 +136,10 @@ export interface OpenshipProjectGroup {
     gitOwner?: string | null;
     gitRepo?: string | null;
     gitBranch?: string | null;
+    /** Narrowed off the manifest by `asRemoteGitUrl` — anything that isn't a
+     *  credential-free https remote becomes null and re-import rebuilds the
+     *  GitHub URL from owner/repo instead (the pre-gitUrl behavior). */
+    gitUrl?: string | null;
   };
   runtimeMode?: string | null;
   /** Whether this project id already exists in this instance's DB. */
@@ -786,6 +790,7 @@ export function reconcileOpenshipProjects(opts: {
             gitOwner: entry.gitOwner,
             gitRepo: entry.gitRepo,
             gitBranch: entry.gitBranch,
+            gitUrl: asRemoteGitUrl(entry.gitUrl),
           }
         : undefined,
       runtimeMode: entry?.runtimeMode ?? undefined,

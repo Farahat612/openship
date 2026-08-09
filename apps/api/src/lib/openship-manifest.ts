@@ -62,6 +62,19 @@ export interface ManifestProjectEntry {
   gitOwner?: string | null;
   gitRepo?: string | null;
   gitBranch?: string | null;
+  /**
+   * The project's REMOTE (`project.gitUrl`). Carried because re-import used to
+   * rebuild it as `https://github.com/<owner>/<repo>.git` — which silently
+   * repointed any non-GitHub project at github.com on recovery.
+   *
+   * WIRE value like `gitProvider` above, and a sharper one: it becomes a
+   * `git clone` argument on a build host. Narrow it with `asRemoteGitUrl`
+   * (https, no embedded credentials) before it reaches a project row — see
+   * docker-reconcile's group `source`. Absent on manifests written before this
+   * field existed; the caller then falls back to the GitHub builder, which is
+   * what those (all-GitHub) projects had anyway.
+   */
+  gitUrl?: string | null;
   runtimeMode?: string | null;
   autoDeploy?: boolean;
   environmentSlug?: string | null;
