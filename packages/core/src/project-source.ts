@@ -5,7 +5,21 @@
  * silently bypassing the release path is exactly the bug we're avoiding).
  */
 
-/** Values stored in `project.gitProvider` (free-text column). */
+/**
+ * Values stored in `project.gitProvider` / `project_app.gitProvider`.
+ *
+ * This is THE canonical set. The columns are typed `.$type<SourceProvider>()`
+ * (packages/db/src/schema/project.ts) and the API body validator derives its
+ * literals from this array (`SourceProviderEnum`), so an unlisted provider
+ * string is a compile error at every write site and a 400 at the HTTP edge.
+ * Adding a provider = adding it here, once.
+ *
+ * NOTE: the SQL column is still plain `text` — this is a compile-time union,
+ * not a DB constraint. Rows written before the union existed are read back as
+ * `SourceProvider` on faith, so anything reading a value that did NOT come
+ * from a checked write (a manifest file, a request body) must narrow it with
+ * `asSourceProvider` rather than cast.
+ */
 export const SOURCE_PROVIDERS = [
   "github",
   "gitlab",
@@ -16,8 +30,29 @@ export const SOURCE_PROVIDERS = [
 ] as const;
 export type SourceProvider = (typeof SOURCE_PROVIDERS)[number];
 
-/** True for a release/dist source (no repo, no build — deploy a prebuilt distribution). */
-export function isReleaseProvider(gitProvider: string | null | undefined): boolean {
+/** Provider assumed when a caller omits one (matches the column default). */
+export const DEFAULT_SOURCE_PROVIDER: SourceProvider = "github";
+
+/** Type guard for an unvalidated value off the wire / off disk. */
+export function isSourceProvider(value: unknown): value is SourceProvider {
+  return typeof value === "string" && (SOURCE_PROVIDERS as readonly string[]).includes(value);
+}
+
+/**
+ * Narrow an unvalidated provider string to the union, or `null` if it isn't one.
+ * Use at the boundaries the type system can't reach (the on-server openship
+ * manifest, any hand-edited JSON) so a junk value can never reach a project row.
+ */
+export function asSourceProvider(value: unknown): SourceProvider | null {
+  return isSourceProvider(value) ? value : null;
+}
+
+/**
+ * True for a release/dist source (no repo, no build — deploy a prebuilt
+ * distribution). Takes the union, not `string`: reading a provider that hasn't
+ * been narrowed is the bug this exists to prevent.
+ */
+export function isReleaseProvider(gitProvider: SourceProvider | null | undefined): boolean {
   return gitProvider === "release";
 }
 

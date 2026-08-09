@@ -24,6 +24,7 @@ import {
   toWorkloadType,
   type DeployTarget,
   type ReleaseSource,
+  type SourceProvider,
   type UpdatableIdentity,
   type WorkloadType,
   type ProductionMode,
@@ -748,7 +749,9 @@ export async function createServicesProjectWithId(opts: {
   organizationId: string;
   hasBuild?: boolean;
   runtimeMode?: "bare" | "docker";
-  gitProvider?: string | null;
+  /** Recovered source discriminator (re-import). Narrowed by the caller — a
+   *  manifest is unvalidated JSON, so it can't be cast into the union. */
+  gitProvider?: SourceProvider | null;
   gitOwner?: string | null;
   gitRepo?: string | null;
   gitBranch?: string | null;
@@ -837,7 +840,9 @@ export async function linkProjectRepo(
   const gitUrl = projectGitUrl(owner, repo);
   const defaultBranch = await resolveDefaultBranch(ctx, owner, repo, input.branch);
 
-  const gitFields: Record<string, unknown> = {
+  // Typed, not `Record<string, unknown>`: the repo linker is a git-source WRITE
+  // site, so `gitProvider` has to be checked against the union here too.
+  const gitFields: Partial<NewProject> = {
     gitProvider: "github",
     gitOwner: owner,
     gitRepo: repo,
@@ -873,7 +878,7 @@ export async function linkProjectRepo(
 
   await repos.project.update(projectId, gitFields);
   if (project!.groupId) {
-    const sharedGitFields = {
+    const sharedGitFields: Partial<NewProject> = {
       gitProvider: "github",
       gitOwner: owner,
       gitRepo: repo,
@@ -1046,7 +1051,9 @@ export async function ensureProject(
     if (project.organizationId !== organizationId) {
       throw new NotFoundError("Project", data.projectId ?? desiredSlug);
     }
-    const update: Record<string, unknown> = {};
+    // Typed against the row, not `Record<string, unknown>`, so the `gitProvider`
+    // write below is checked against the SourceProvider union like every other.
+    const update: Partial<NewProject> = {};
     if (data.framework !== undefined) update.framework = normalizeFramework(data.framework);
     if (data.packageManager !== undefined) update.packageManager = data.packageManager;
     if (data.installCommand !== undefined) update.installCommand = data.installCommand;

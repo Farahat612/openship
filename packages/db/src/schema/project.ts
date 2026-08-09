@@ -16,6 +16,7 @@ import type {
   ReleaseSource,
   ProjectObjectStorage,
   OpenshipReadiness,
+  SourceProvider,
 } from "@repo/core";
 import { organization } from "./organization";
 import { service } from "./service";
@@ -43,8 +44,8 @@ export const projectGroup = pgTable("project_app", {
   /** URL-safe slug shared by the app */
   slug: text("slug").notNull(),
 
-  /** Shared source identity */
-  gitProvider: text("git_provider").default("github"),
+  /** Shared source identity. Same checked union as `project.gitProvider`. */
+  gitProvider: text("git_provider").$type<SourceProvider>().default("github"),
   gitOwner: text("git_owner"),
   gitRepo: text("git_repo"),
   gitUrl: text("git_url"),
@@ -110,8 +111,12 @@ export const project = pgTable(
 
     /* ── Git source ─────────────────────────────────────────────────────── */
     /**
-     * Source discriminator: "github" | "gitlab" | "bitbucket" | "local" | "upload" | "release".
-     * (Free-text; canonical set = SOURCE_PROVIDERS in @repo/core.)
+     * Source discriminator. CHECKED UNION — `SourceProvider` / SOURCE_PROVIDERS
+     * in @repo/core is the one canonical set; a provider not listed there is a
+     * compile error here and at every write site. SQL stays plain `text` (no
+     * enum, no migration), so this is a compile-time constraint only: a value
+     * read back out is trusted, and anything arriving unvalidated (a request
+     * body, the on-server manifest) must be narrowed, not cast.
      *   - "local"  → folder on a filesystem the API can read (desktop/self-hosted),
      *                path in `localPath`.
      *   - "upload" → source came from a browser folder-upload; no durable origin
@@ -120,7 +125,7 @@ export const project = pgTable(
      *   - "release" → a prebuilt DIST (no repo, no build). Redeploys track a
      *                VERSION, not a commit. Config lives in `releaseSource`.
      */
-    gitProvider: text("git_provider").default("github"),
+    gitProvider: text("git_provider").$type<SourceProvider>().default("github"),
     /** Owner/org on the git provider */
     gitOwner: text("git_owner"),
     /** Repo name on the git provider */

@@ -1,6 +1,6 @@
 import { api } from "./client";
 import type { PrepareComposeService, PrepareProjectResponse } from "./deploy";
-import type { RoutingConfig, RouteRuleSpec, ProxySettings, OpenshipReadiness, WorkloadType } from "@repo/core";
+import type { RoutingConfig, RouteRuleSpec, ProxySettings, OpenshipReadiness, WorkloadType, SourceProvider } from "@repo/core";
 import { endpoints } from "./endpoints";
 
 /* ------------------------------------------------------------------ */
@@ -246,8 +246,9 @@ export const projectsApi = {
     defaultRollbackStrategy?: "git" | "snapshot";
     slug?: string;
     gitOwner?: string;
-    /** Source discriminator; "upload" for browser folder-upload projects. */
-    gitProvider?: string;
+    /** Source discriminator; "upload" for browser folder-upload projects.
+     *  Same checked union the API validates against (SOURCE_PROVIDERS). */
+    gitProvider?: SourceProvider;
     gitRepo?: string;
     gitBranch?: string;
     framework?: string;

@@ -228,9 +228,16 @@ Decisions to settle before coding:
       covers Gitea/Forgejo/Bitbucket on day one, but it silently loses
       auto-deploy, repo listing, and per-repo grants. Ship it only if the UI says
       plainly what it can't do.
-- [ ] **Make `gitProvider` a checked union** (`packages/db/src/schema/project.ts:39,115`
-      — free text defaulting to `"github"`) BEFORE any second provider writes
-      rows. Retrofitting a union over mixed data is the expensive order.
+- [x] **Make `gitProvider` a checked union** — DONE. `SourceProvider` /
+      `SOURCE_PROVIDERS` (`packages/core/src/project-source.ts`) is now applied
+      to both columns via `.$type<SourceProvider>()`
+      (`packages/db/src/schema/project.ts:48,128`), so every write site is
+      compile-checked; the SQL column stays plain `text` (no migration, existing
+      rows untouched). The HTTP edge is gated by `SourceProviderEnum`
+      (`project.schema.ts`), derived from the same array, and the one
+      unvalidated inbound value — the on-server openship manifest — is narrowed
+      with `asSourceProvider` in `docker-reconcile.ts`. Adding a provider is now
+      a one-line edit to `SOURCE_PROVIDERS`.
 - [ ] **Naming trap**: `apps/api/src/modules/github/` is 26 files and the module
       path is load-bearing in imports across the API. Prefer adding
       `modules/git/` for the provider-agnostic seam and leaving GitHub as one

@@ -20,7 +20,8 @@ import type {
   ProxyKind,
 } from "@repo/adapters";
 import { classifyProxy } from "@repo/adapters";
-import type { ComposeHealthcheck, ProxySettings } from "@repo/core";
+import { asSourceProvider } from "@repo/core";
+import type { ComposeHealthcheck, ProxySettings, SourceProvider } from "@repo/core";
 import type { ComposeService } from "../../lib/compose-parser";
 import type { ManifestProjectEntry } from "../../lib/openship-manifest";
 import type { ExistingRoute } from "./proxy-route-scan";
@@ -128,7 +129,10 @@ export interface OpenshipProjectGroup {
   domains?: string[];
   /** Git source recovered from the manifest (restored on re-import). */
   source?: {
-    gitProvider?: string | null;
+    /** Narrowed off the manifest — an unrecognized provider becomes null
+     *  (re-import then falls back to the column default) rather than writing
+     *  a value outside SOURCE_PROVIDERS into the project row. */
+    gitProvider?: SourceProvider | null;
     gitOwner?: string | null;
     gitRepo?: string | null;
     gitBranch?: string | null;
@@ -778,7 +782,7 @@ export function reconcileOpenshipProjects(opts: {
       domains: entry?.domains,
       source: entry
         ? {
-            gitProvider: entry.gitProvider,
+            gitProvider: asSourceProvider(entry.gitProvider),
             gitOwner: entry.gitOwner,
             gitRepo: entry.gitRepo,
             gitBranch: entry.gitBranch,

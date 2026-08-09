@@ -12,7 +12,9 @@ import {
   CLOUD_RESOURCE_TIER_IDS,
   PROXY_DIRECTIVES,
   proxyKindRegex,
+  SOURCE_PROVIDERS,
   type ResourceTier,
+  type SourceProvider,
 } from "@repo/core";
 
 // ─── Shared enums (derived from registry) ────────────────────────────────────
@@ -41,6 +43,24 @@ export const ResourceTierEnum = (opts?: { description?: string }) =>
     ],
     opts,
   );
+
+/**
+ * Source discriminator — the ONE place a raw provider string enters the system
+ * (create/ensure bodies from the dashboard, CLI and MCP). Derived from
+ * SOURCE_PROVIDERS so it can't drift from the column type: an unknown provider
+ * is a 400 here instead of a junk value in `project.git_provider`, and `Static<>`
+ * keeps the literal union so the service layer needs no cast.
+ */
+export const SourceProviderEnum = Type.Union(
+  SOURCE_PROVIDERS.map((p) => Type.Literal(p)) as [
+    TLiteral<SourceProvider>,
+    ...TLiteral<SourceProvider>[],
+  ],
+  {
+    default: "github",
+    description: `Where the project's code/dist comes from: ${SOURCE_PROVIDERS.join(" | ")}.`,
+  },
+);
 
 /** Cloud-selectable subset — no "unlimited" (a metered workspace must be sized). */
 export const CloudResourceTierEnum = (opts?: { description?: string }) =>
@@ -333,7 +353,7 @@ export const CreateProjectBody = Type.Object({
   // Local source
   localPath: Type.Optional(Type.String({ maxLength: 1000 })),
   // Git source
-  gitProvider: Type.Optional(Type.String({ default: "github" })),
+  gitProvider: Type.Optional(SourceProviderEnum),
   gitOwner: Type.Optional(Type.String({ maxLength: 100 })),
   gitRepo: Type.Optional(Type.String({ maxLength: 100 })),
   gitBranch: Type.Optional(Type.String({ default: "main" })),

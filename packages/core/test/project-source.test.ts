@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   SOURCE_PROVIDERS,
+  asSourceProvider,
   isReleaseProvider,
+  isSourceProvider,
   renderAssetName,
+  type SourceProvider,
 } from "../src/project-source";
 
 describe("isReleaseProvider", () => {
@@ -14,11 +17,30 @@ describe("isReleaseProvider", () => {
     expect(isReleaseProvider("upload")).toBe(false);
     expect(isReleaseProvider(null)).toBe(false);
     expect(isReleaseProvider(undefined)).toBe(false);
-    expect(isReleaseProvider("")).toBe(false);
+    // The SQL column is still plain `text` — the union is compile-time only, so
+    // a legacy/garbage row must not blow up the read path. Cast is deliberate.
+    expect(isReleaseProvider("" as SourceProvider)).toBe(false);
   });
 
   it("release is a member of SOURCE_PROVIDERS", () => {
     expect(SOURCE_PROVIDERS).toContain("release");
+  });
+});
+
+describe("asSourceProvider / isSourceProvider", () => {
+  it("passes through every canonical provider", () => {
+    for (const provider of SOURCE_PROVIDERS) {
+      expect(isSourceProvider(provider)).toBe(true);
+      expect(asSourceProvider(provider)).toBe(provider);
+    }
+  });
+
+  it("rejects anything outside the union (manifest JSON is unvalidated)", () => {
+    expect(asSourceProvider("gitlabs")).toBeNull();
+    expect(asSourceProvider("")).toBeNull();
+    expect(asSourceProvider(null)).toBeNull();
+    expect(asSourceProvider(undefined)).toBeNull();
+    expect(asSourceProvider(7)).toBeNull();
   });
 });
 

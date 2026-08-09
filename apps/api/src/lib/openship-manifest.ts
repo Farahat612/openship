@@ -52,6 +52,12 @@ export interface ManifestProjectEntry {
   groupId: string;
   appName?: string | null;
   appSlug?: string | null;
+  /**
+   * WIRE value, deliberately `string`: `readManifest` casts parsed JSON off a
+   * remote box without field validation, so this is not a trusted
+   * `SourceProvider`. Narrow it (`asSourceProvider`) before it reaches a
+   * project row — see docker-reconcile's group `source`.
+   */
   gitProvider?: string | null;
   gitOwner?: string | null;
   gitRepo?: string | null;
