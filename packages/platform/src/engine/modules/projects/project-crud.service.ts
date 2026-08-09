@@ -717,6 +717,9 @@ function buildProductionProjectInput(
     rootDirectory: data.rootDirectory,
     composePath: normalizeComposePath(data.composePath),
     startCommand: data.startCommand,
+    // undefined (not declared) leaves the column NULL = no release phase, which
+    // is what every project did before the phase existed.
+    releaseCommands: data.releaseCommands ?? null,
     buildImage: data.buildImage,
     productionMode: workload.productionMode,
     port: data.port ?? 3000,
@@ -1484,6 +1487,7 @@ export async function ensureProject(data: EnsureProjectBody, organizationId: str
     if (data.rootDirectory !== undefined) update.rootDirectory = data.rootDirectory;
     if (data.composePath !== undefined) update.composePath = normalizeComposePath(data.composePath);
     if (data.startCommand !== undefined) update.startCommand = data.startCommand;
+    if (data.releaseCommands !== undefined) update.releaseCommands = data.releaseCommands;
     if (data.buildImage !== undefined) update.buildImage = data.buildImage;
     if (data.port !== undefined) update.port = data.port;
     // Workload axis (workloadType / hasServer / productionMode) — one choke
@@ -2049,6 +2053,7 @@ export async function createProjectEnvironment(
     rootDirectory: base.rootDirectory,
     composePath: base.composePath,
     startCommand: base.startCommand,
+    releaseCommands: base.releaseCommands,
     buildImage: base.buildImage,
     productionMode: base.productionMode,
     port: base.port,
@@ -2643,6 +2648,15 @@ export async function updateOptions(
     update.composePath = normalizeComposePath(composePath);
   }
   if (options.startCommand !== undefined) update.startCommand = options.startCommand;
+  // Array-or-null only, same rule as `volumes`: a bare string here would run as
+  // one nonsense command between build and cutover, and a failure there fails the
+  // deploy. null/[] turns the release phase off.
+  if (options.releaseCommands !== undefined) {
+    if (options.releaseCommands !== null && !Array.isArray(options.releaseCommands)) {
+      throw new ValidationError("releaseCommands must be an array of commands, or null");
+    }
+    update.releaseCommands = options.releaseCommands;
+  }
   if (options.productionPort !== undefined) update.port = options.productionPort;
   if (options.packageManager !== undefined) update.packageManager = options.packageManager;
   if (options.buildImage !== undefined) update.buildImage = options.buildImage;

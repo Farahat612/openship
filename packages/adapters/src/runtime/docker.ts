@@ -175,6 +175,7 @@ import { splitRuntimeEnv, droppedRuntimeEnvMessage } from "./runtime-env";
 import {
   ownsNetworkEndpoint,
   safeErrorMessage,
+  SYSTEM,
   type ComposeAdvanced,
   type ComposeHealthcheck,
 } from "@repo/core";
@@ -1060,6 +1061,26 @@ export function parseContainerEventLine(line: string): ContainerLifecycleEvent |
 
 // ─── Docker runtime ──────────────────────────────────────────────────────────
 
+/**
+ * The env every container a deployment starts gets: the running app (`deploy`)
+ * and its release commands (`runReleaseCommand`) both take it from here, so a
+ * migration can never resolve a different DSN, PATH or PORT than the app it
+ * prepares. A worker (`portless`) listens on nothing, so injecting PORT would be a
+ * lie the app might bind to — it is omitted there (#538-B). `dropped` is what
+ * `splitRuntimeEnv` refused, returned so each caller can say so in its own log.
+ */
+function deploymentContainerEnv(config: DeployConfig): { env: string[]; dropped: string[] } {
+  const projectEnv = splitRuntimeEnv(config.envVars);
+  return {
+    env: [
+      ...(config.portless ? [] : [`PORT=${config.port}`]),
+      `NODE_ENV=${config.environment === "production" ? "production" : "development"}`,
+      ...projectEnv.entries.map(([k, v]) => `${k}=${v}`),
+    ],
+    dropped: projectEnv.dropped,
+  };
+}
+
 export class DockerRuntime implements RuntimeAdapter {
   readonly name: string = "docker";
   readonly capabilities: ReadonlySet<RuntimeCapability> = new Set<RuntimeCapability>([
@@ -1092,6 +1113,7 @@ export class DockerRuntime implements RuntimeAdapter {
     // through it cannot reach the host. Bare deliberately does NOT declare this.
     "isolatedExec",
     "dockerHost",
+    "releaseCommand",
   ]);
 
   /** Docker honors every extended compose key we currently support. */
@@ -3480,21 +3502,15 @@ export class DockerRuntime implements RuntimeAdapter {
 
     const containerName = `openship-${config.runtimeName || config.projectId}-${config.deploymentId}`;
 
-    // Environment variables. A worker (config.portless) listens on nothing, so
-    // injecting PORT would be a lie the app might bind to — omit it there (#538-B).
-    const projectEnv = splitRuntimeEnv(config.envVars);
-    if (projectEnv.dropped.length > 0) {
+    // Environment variables — shared with runReleaseCommand, see deploymentContainerEnv.
+    const { env, dropped } = deploymentContainerEnv(config);
+    if (dropped.length > 0) {
       log({
         timestamp: new Date().toISOString(),
         level: "warn",
-        message: droppedRuntimeEnvMessage(projectEnv.dropped),
+        message: droppedRuntimeEnvMessage(dropped),
       });
     }
-    const env = [
-      ...(config.portless ? [] : [`PORT=${config.port}`]),
-      `NODE_ENV=${config.environment === "production" ? "production" : "development"}`,
-      ...projectEnv.entries.map(([k, v]) => `${k}=${v}`),
-    ];
 
     // Start command - if provided, split into Cmd array
     const cmd = config.startCommand ? ["sh", "-c", config.startCommand] : undefined;
@@ -3625,6 +3641,154 @@ export class DockerRuntime implements RuntimeAdapter {
       containerId: container.id,
       status: "running",
     };
+  }
+
+  /**
+   * Run one release command in a THROWAWAY container off the freshly-built
+   * image, before anything is activated.
+   *
+   * A one-off container, not an exec into the running deployment: at this point
+   * in the pipeline the new version isn't running yet and the old one is still
+   * serving — `exec`ing there would run the new release's migrations inside the
+   * OLD image, and a failure would take a healthy container down with it.
+   *
+   * Env / mounts / network mirror `deploy` above so a migration reaches the same
+   * database and writes to the same volume the app will read from. Deliberately
+   * NOT mirrored: the published port (a release command must never contend with
+   * the running app for the loopback pin) and the restart policy (a one-off
+   * command that exits non-zero must fail, not bounce).
+   */
+  async runReleaseCommand(
+    config: DeployConfig,
+    command: string,
+    onLog: LogCallback,
+    opts?: { timeoutMs?: number },
+  ): Promise<void> {
+    const imageRef = config.imageRef;
+    if (!imageRef) {
+      throw new Error("Release commands require an imageRef (built image tag)");
+    }
+    const timeoutMs = opts?.timeoutMs ?? SYSTEM.DEPLOYMENTS.RELEASE_COMMAND_TIMEOUT_MS;
+
+    // The app's env, from the same function deploy uses — a migration that
+    // resolves its DSN, PATH or PORT differently from the app is worse than no
+    // migration. Logged here too: this phase runs, and can fail, before deploy
+    // ever gets to say it.
+    const { env, dropped } = deploymentContainerEnv(config);
+    if (dropped.length > 0) {
+      onLog({
+        timestamp: new Date().toISOString(),
+        level: "warn",
+        message: droppedRuntimeEnvMessage(dropped),
+      });
+    }
+    const scopedBinds = scopeVolumeBinds(
+      config.slug || config.runtimeName || config.projectId,
+      config.volumes ?? [],
+      true,
+    );
+    // Best-effort, exactly as in deploy: no network just means a release command
+    // can't reach a linked project by alias, which is not a reason to refuse.
+    let networkId: string | undefined;
+    if (config.networkAlias) {
+      networkId = await this.ensureNetwork(
+        config.slug || config.runtimeName || config.projectId,
+      ).catch(() => undefined);
+    }
+
+    const container = await this.docker.createContainer({
+      name: `openship-release-${config.deploymentId}-${Date.now().toString(36)}`,
+      Image: imageRef,
+      // Override the ENTRYPOINT for the same reason the static extract does:
+      // a base image's docker-entrypoint.sh would swallow this Cmd.
+      Entrypoint: ["/bin/sh", "-c"],
+      Cmd: [command],
+      Env: env,
+      Labels: this.labels({
+        deploymentId: config.deploymentId,
+        projectId: config.projectId,
+      }),
+      HostConfig: {
+        Binds: scopedBinds.length > 0 ? scopedBinds : undefined,
+        ...(networkId ? { NetworkMode: networkId } : {}),
+        ...dockerResourceLimits(config.resources),
+      },
+    });
+
+    try {
+      await container.start();
+
+      // Follow from the start of the container's life — `tail` is deliberately
+      // omitted, since the daemon's default is the whole log, so opening the
+      // stream after `start()` can't lose the first lines.
+      const stream = (await container.logs({
+        stdout: true,
+        stderr: true,
+        follow: true,
+      })) as unknown as NodeJS.ReadableStream;
+
+      // Tail kept for the failure message: the operator has to be able to read
+      // WHY a migration failed without going to find the deploy log.
+      let tail = "";
+      let buffer = "";
+      stream.on("data", (chunk: Buffer) => {
+        const text = stripDockerChunkHeader(chunk).toString("utf-8");
+        tail = (tail + text).slice(-4000);
+        buffer += text;
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          onLog({ timestamp: new Date().toISOString(), message: `${line}\n`, level: parseLogLevel(line) });
+        }
+      });
+
+      // Resolves when the daemon closes the follow stream, which it does when the
+      // container exits. Awaited alongside `wait` so the last lines the command
+      // wrote before exiting aren't lost to the race between the two.
+      const streamDone = new Promise<void>((resolve) => {
+        stream.on("end", () => resolve());
+        stream.on("close", () => resolve());
+        stream.on("error", () => resolve());
+      });
+
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        (stream as unknown as { destroy?: () => void }).destroy?.();
+        // Stop rather than remove: the finally below removes it, and stopping is
+        // what unblocks the `wait` this race is holding.
+        container.stop({ t: 5 }).catch(() => { /* best effort */ });
+      }, timeoutMs);
+
+      let status: { StatusCode: number };
+      try {
+        status = await container.wait();
+        // Bounded: a daemon that never closes the stream after the container is
+        // gone must cost a couple of seconds, not the whole release budget (which
+        // would then report a finished command as a timeout).
+        await Promise.race([streamDone, new Promise((r) => setTimeout(r, 2_000))]);
+      } finally {
+        clearTimeout(timer);
+        (stream as unknown as { destroy?: () => void }).destroy?.();
+      }
+      if (buffer) {
+        onLog({ timestamp: new Date().toISOString(), message: `${buffer}\n`, level: parseLogLevel(buffer) });
+      }
+
+      if (timedOut) {
+        throw new Error(
+          `Release command timed out after ${Math.round(timeoutMs / 1000)}s: ${command}`,
+        );
+      }
+      if (status.StatusCode !== 0) {
+        throw new Error(
+          `Release command failed with exit code ${status.StatusCode}: ${command}` +
+            (tail.trim() ? `\n${tail.trim().slice(-1000)}` : ""),
+        );
+      }
+    } finally {
+      await container.remove({ force: true }).catch(() => { /* best effort */ });
+    }
   }
 
   async stop(containerId: string): Promise<void> {

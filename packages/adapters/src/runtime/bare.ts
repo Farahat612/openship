@@ -33,7 +33,7 @@ import type {
 import { LocalExecutor, wrapLocalBuildCommand } from "../system/executor";
 import { ensureOwnedDir } from "../system/elevated-executor";
 import { execReliable } from "../system/remote-journal";
-import { STACKS, appVolumeTargets, buildOutputTransferExcludes, safeErrorMessage, missingOutputDirectoryMessage, packageManagerEnsureCommand, nodeBinPathExport, type StackId, type StackDefinition } from "@repo/core";
+import { SYSTEM, STACKS, appVolumeTargets, buildOutputTransferExcludes, safeErrorMessage, missingOutputDirectoryMessage, packageManagerEnsureCommand, nodeBinPathExport, type StackId, type StackDefinition } from "@repo/core";
 import { checkToolchainForStack, installTools } from "../toolchain";
 import type {
   RuntimeAdapter,
@@ -109,6 +109,26 @@ export const STATIC_RELEASE_BASE = "/opt/openship/static";
 
 // ─── Bare runtime ────────────────────────────────────────────────────────────
 
+/**
+ * The env a bare deployment's processes get: the supervised app (`deploy`) and its
+ * release commands (`runReleaseCommand`) both take it from here, so a migration
+ * can never resolve a different DSN, PATH or PORT than the app it prepares.
+ * `dropped` is what `splitRuntimeEnv` refused, returned so each caller can say so.
+ */
+function bareProcessEnv(config: DeployConfig): { env: Record<string, string>; dropped: string[] } {
+  const projectEnv = splitRuntimeEnv(
+    Object.fromEntries(Object.entries(config.envVars ?? {}).map(([k, v]) => [k, String(v)])),
+  );
+  return {
+    env: {
+      ...Object.fromEntries(projectEnv.entries),
+      PORT: String(config.port),
+      NODE_ENV: config.environment === "production" ? "production" : "development",
+    },
+    dropped: projectEnv.dropped,
+  };
+}
+
 export class BareRuntime implements RuntimeAdapter {
   readonly name = "bare";
   readonly capabilities: ReadonlySet<RuntimeCapability> = new Set<RuntimeCapability>([
@@ -132,6 +152,7 @@ export class BareRuntime implements RuntimeAdapter {
     // host's supervisor and the particular release still support it.
     "unitRestore",
     "inContainerExec",
+    "releaseCommand",
   ]);
 
   private readonly workDir: string;
@@ -702,22 +723,14 @@ export class BareRuntime implements RuntimeAdapter {
     // below prepends to. The dependency binary would still resolve, but the
     // interpreter behind its shebang (`#!/usr/bin/env node`) would not once
     // /usr/bin is gone.
-    const projectEnv = splitRuntimeEnv(
-      Object.fromEntries(Object.entries(config.envVars ?? {}).map(([k, v]) => [k, String(v)])),
-    );
-    if (projectEnv.dropped.length > 0) {
+    const { env, dropped } = bareProcessEnv(config);
+    if (dropped.length > 0) {
       _onLog?.({
         timestamp: new Date().toISOString(),
         level: "warn",
-        message: droppedRuntimeEnvMessage(projectEnv.dropped),
+        message: droppedRuntimeEnvMessage(dropped),
       });
     }
-
-    const env: Record<string, string> = {
-      ...Object.fromEntries(projectEnv.entries),
-      PORT: String(config.port),
-      NODE_ENV: config.environment === "production" ? "production" : "development",
-    };
 
     // `next start` / `gatsby serve` / `remix-serve` name a DEPENDENCY binary, and
     // the supervisor hands the command to a bare `sh -lc` — nothing prepends
@@ -757,6 +770,88 @@ export class BareRuntime implements RuntimeAdapter {
       containerId: config.deploymentId,
       status: "running",
     };
+  }
+
+  /**
+   * Run one release command in the STAGED artifact directory, before it is
+   * promoted to a release and before the supervisor starts anything.
+   *
+   * That directory is the exact tree `deploy` promotes seconds later, so the
+   * command sees the code it is migrating for. It runs through a login shell
+   * (`sh -lc`, via the same wrap the build steps use) with the deploy's env
+   * exported — the closest match available to what `ExecStart=/bin/sh -lc` gives
+   * the start command.
+   *
+   * One difference worth knowing: `linkPersistentPaths` has not run yet, so a
+   * path that will become a symlink into `shared/` (Laravel's `storage/`) is
+   * still a plain directory here. A command that MIGRATES A DATABASE is
+   * unaffected; one that writes files it expects to survive the release swap
+   * (an SQLite file under `storage/`) would write into the release copy that
+   * `shared/` is about to be seeded FROM on a first deploy, and into the release
+   * copy alone on later ones.
+   */
+  async runReleaseCommand(
+    config: DeployConfig,
+    command: string,
+    onLog: LogCallback,
+    opts?: { timeoutMs?: number },
+  ): Promise<void> {
+    const workDir = config.imageRef ?? this.projectDir(config.projectId);
+    const timeoutMs = opts?.timeoutMs ?? SYSTEM.DEPLOYMENTS.RELEASE_COMMAND_TIMEOUT_MS;
+
+    // The start command's env, from the same function deploy uses. Logged here
+    // too: this phase runs, and can fail, before deploy ever gets to say it.
+    // Non-identifier keys are dropped rather than breaking the `export` prefix,
+    // matching the build pipeline's env handling.
+    const { env, dropped } = bareProcessEnv(config);
+    if (dropped.length > 0) {
+      onLog({
+        timestamp: new Date().toISOString(),
+        level: "warn",
+        message: droppedRuntimeEnvMessage(dropped),
+      });
+    }
+    const envPrefix = Object.entries(env)
+      .filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
+      .map(([k, v]) => `export ${k}=${sq(v)}`)
+      .join(" && ");
+    // The same dependency-binary resolution the start command gets (see deploy):
+    // `prisma migrate deploy` names a node_modules/.bin binary exactly the way
+    // `next start` does, and nothing else puts that directory on PATH here.
+    const binPath = nodeBinPathExport(config.packageManager, [workDir]);
+    const full =
+      `${envPrefix ? `${envPrefix} && ` : ""}cd ${sq(workDir)} && ` +
+      `${binPath ? `${binPath} && ` : ""}${command}`;
+    // Login-shell wrap for a LOCAL target only — same rule buildOnTarget applies,
+    // and the reason a version-managed toolchain (nvm, rbenv) is on PATH at all.
+    const effective = this.executor instanceof LocalExecutor ? wrapLocalBuildCommand(full) : full;
+
+    const abort = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      abort.abort();
+    }, timeoutMs);
+    let result: { code: number; output: string };
+    try {
+      result = await this.executor.streamExec(effective, onLog, { signal: abort.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    // Checked BEFORE the exit code: an aborted child's code is whatever the kill
+    // produced, and reporting that as the failure would hide the real cause.
+    if (timedOut) {
+      throw new Error(
+        `Release command timed out after ${Math.round(timeoutMs / 1000)}s: ${command}`,
+      );
+    }
+    if (result.code !== 0) {
+      const tail = result.output.trim().slice(-1000);
+      throw new Error(
+        `Release command failed with exit code ${result.code}: ${command}${tail ? `\n${tail}` : ""}`,
+      );
+    }
   }
 
   async deployStatic(config: DeployConfig & { outputDirectory: string }): Promise<DeploymentResult> {

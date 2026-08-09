@@ -263,6 +263,11 @@ export interface ProjectInfo {
    */
   readiness?: OpenshipReadiness;
   /**
+   * Declared release commands — run once per deploy between build and cutover.
+   * Absent means no release phase, which is the default for every project.
+   */
+  releaseCommands?: string[];
+  /**
    * What the root `openship.json` parse REFUSED, when it refused anything (#641).
    * Advisory only: an invalid config has never failed a scan or a deploy, it just
    * silently didn't apply — which IS the bug. Absent when the repo has no file or
@@ -560,6 +565,8 @@ function applyOpenshipOverlay(info: ProjectInfo, config: OpenshipConfig | undefi
   }
   if (config.resources) info.resources = config.resources;
   if (config.readiness) info.readiness = config.readiness;
+  // Declared `[]` is meaningful (release phase off), so test for presence.
+  if (config.releaseCommands) info.releaseCommands = config.releaseCommands;
 
   // Declared compose services replace detection: the project IS a services
   // project. runtimeMode="docker" then falls out of buildProductionProjectInput's
@@ -658,6 +665,7 @@ export function projectInfoToScanResponse(result: ProjectInfo, options: SourceSc
     ...(publicInfo.publicEndpoints && { publicEndpoints: publicInfo.publicEndpoints }),
     ...(publicInfo.resources && { resources: publicInfo.resources }),
     ...(publicInfo.readiness && { readiness: publicInfo.readiness }),
+    ...(publicInfo.releaseCommands && { releaseCommands: publicInfo.releaseCommands }),
     ...(publicInfo.configDiagnostics && { configDiagnostics: publicInfo.configDiagnostics }),
     ...(publicInfo.rootEnv &&
       Object.keys(publicInfo.rootEnv).length > 0 && {

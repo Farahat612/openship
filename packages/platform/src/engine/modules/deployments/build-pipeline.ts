@@ -130,6 +130,7 @@ import {
   outputFindingIsBroken,
   staticOutputTargets,
 } from "./output-audit.service";
+import { RELEASE_COMMAND_TIMEOUT_MS, resolveReleaseCommands, runReleasePhase } from "./release-phase";
 import { createBuildConfig } from "./build-config";
 import {
   pinnedAppImage,
@@ -1119,6 +1120,15 @@ async function executeBuildAndDeploy(
         });
       }
 
+      // A compose project's release phase would have to name a SERVICE to run in
+      // (there is no single app image), which v1 doesn't model — so say so
+      // instead of dropping the declaration on the floor.
+      await runReleasePhase({
+        commands: resolveReleaseCommands(snapshot.releaseCommands),
+        unsupportedReason: "Release commands aren't supported on services/compose projects yet",
+        log: (message, level) => logger.log(`${message}\n`, level),
+      });
+
       // Clone-on-server for compose: open one repo-pinned relay for the whole
       // fan-out (all services share the same repo), thread its helper path into
       // every service buildConfig, and close it once the pipeline settles.
@@ -1451,6 +1461,14 @@ async function executeStaticEdgeDeploy(
     prodResources,
     logger,
   } = phase;
+
+  // Pages is a file upload, not a workload — there is nothing to run a command
+  // in. Declared commands are named in the log rather than silently dropped.
+  await runReleasePhase({
+    commands: resolveReleaseCommands(snapshot.releaseCommands),
+    unsupportedReason: "A static edge (Pages) deploy has no runtime to run release commands in",
+    log: (message, level) => logger.log(`${message}\n`, level),
+  });
 
   logger.step("deploy", "running", "Deploying to edge (static)...");
 
@@ -2164,7 +2182,59 @@ async function executeServerDeploy(phase: DeployPhaseInputs): Promise<void> {
     // Bare uses this to hard-link identical files across releases.
     // Other runtimes ignore it.
     previousDeploymentId: prevDep?.id,
+    // Frozen on the snapshot, so a redeploy that REBUILDS an old deployment runs
+    // the commands THAT release declared rather than today's. A rollback restore
+    // is the one case that does not replay them (see the release phase below).
+    // Absent on pre-release-phase rows.
+    releaseCommands: snapshot.releaseCommands,
   };
+
+  // ── Release phase: after the build, before ANY cutover ────────────────────
+  // Placed here on purpose. Nothing below has touched the live deployment yet —
+  // the previous version is running and routed, no domain row has been created,
+  // runDeployPipeline hasn't been entered — so a failed migration aborts with the
+  // old version still serving and nothing to roll back. It is the same boundary
+  // for every runtime this path serves: docker/bare/static all activate inside
+  // runDeployPipeline's `activate` step, which is strictly after this.
+  const releaseCommands = resolveReleaseCommands(deployConfig.releaseCommands);
+  if (releaseCommands.length > 0) {
+    // A ROLLBACK DOES NOT REPLAY THEM. `pinnedAppImage` is set only by a rollback
+    // restore (a plain Redeploy runs `withoutPinnedArtifacts` and rebuilds), so it
+    // is the exact discriminator here: pinned means "promote a release we already
+    // built", unpinned means "this build is new". Replaying is close to pointless
+    // in the good case — the schema is already ahead of the release coming back, so
+    // `migrate` finds nothing to do — and harmful in the bad one, because rollback
+    // is the emergency path and a phase that can fail the deploy is a new way for
+    // the recovery itself to abort. The snapshot freeze above still stands: a
+    // redeploy that genuinely rebuilds an old release DOES run that release's
+    // commands. Only the way back skips.
+    const rollbackImage = pinnedAppImage(snapshot);
+    try {
+      await runReleasePhase({
+        commands: releaseCommands,
+        deliberateSkipReason: rollbackImage
+          ? "Rolling back to a release that was already built, so its release commands are not replayed"
+          : undefined,
+        // A static file-serve has no process and no image to run a command in,
+        // and cloud has no one-off execution primitive at all — both fall through
+        // to the logged skip rather than pretending the commands ran.
+        run:
+          !isStaticFileServe && runtime.supports("releaseCommand") && runtime.runReleaseCommand
+            ? (command) =>
+                runtime.runReleaseCommand!(deployConfig, command, logger.callback, {
+                  timeoutMs: RELEASE_COMMAND_TIMEOUT_MS,
+                })
+            : undefined,
+        unsupportedReason: isStaticFileServe
+          ? "A static site has no runtime to run release commands in"
+          : `The "${runtime.name}" runtime can't run release commands yet`,
+        log: (message, level) => logger.log(`${message}\n`, level),
+      });
+    } catch (err) {
+      await onFailure(ctx, safeErrorMessage(err), buildResult.durationMs);
+      return;
+    }
+  }
 
   // Resolve the previous deployment + its runtime so we can deactivate it cleanly.
   // A DISTINCT platform from this deploy's, so on a remote server it binds its own

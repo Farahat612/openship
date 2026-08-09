@@ -562,6 +562,33 @@ describe("resolveSnapshotTarget", () => {
   });
 });
 
+/**
+ * Release commands are FROZEN onto the deployment, for the same reason `volumes`
+ * is: a redeploy of an old deployment must replay the commands that release
+ * declared, not whatever the project says today. The absent case matters just as
+ * much — the key must not appear at all, so a snapshot from a project with no
+ * release phase is byte-identical to one written before the field existed (and a
+ * redeploy of a pre-existing deployment stays a no-op).
+ */
+describe("buildConfigSnapshot — release commands", () => {
+  it("freezes the project's declared commands onto the snapshot", () => {
+    const snapshot = buildConfigSnapshot(
+      baseProject({ releaseCommands: ["php artisan migrate --force", "php artisan optimize"] }) as any,
+    );
+    expect(snapshot.releaseCommands).toEqual([
+      "php artisan migrate --force",
+      "php artisan optimize",
+    ]);
+  });
+
+  it("omits the key entirely for null, [] and a project that never declared any", () => {
+    for (const releaseCommands of [null, [], undefined]) {
+      const snapshot = buildConfigSnapshot(baseProject({ releaseCommands }) as any);
+      expect("releaseCommands" in snapshot).toBe(false);
+    }
+  });
+});
+
 describe("triggerDeployment", () => {
   beforeEach(() => {
     vi.clearAllMocks();
