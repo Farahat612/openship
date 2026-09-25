@@ -147,16 +147,44 @@ describe("monitoring scan admission and recovery", () => {
     expect(h.start).not.toHaveBeenCalled();
   });
 
-  it("ignores a stale status response received after a new scan was accepted", async () => {
+  it("keeps polling when an older status request outlasts a newly accepted scan's timer", async () => {
     await render();
     const oldRead = deferred<{ data: MonitoringScanSession }>();
     h.status.mockReturnValueOnce(oldRead.promise);
     await act(async () => window.dispatchEvent(new Event("focus")));
     await act(async () => result.rescan());
+    await advance(2400);
     await act(async () => oldRead.resolve({ data: session("completed", "old") }));
     expect(result.scan?.id).toBe("scan-1");
     expect(result.rescanning).toBe(true);
     expect(h.complete).not.toHaveBeenCalled();
+
+    h.status.mockResolvedValue({ data: session("completed") });
+    await advance();
+    expect(result.rescanning).toBe(false);
+    expect(h.complete).toHaveBeenCalledExactlyOnceWith(session("completed"), true);
+    expect(h.start).toHaveBeenCalledOnce();
+  });
+
+  it("reattaches after a lost POST response even when an older GET consumed its retry timer", async () => {
+    await render();
+    const oldRead = deferred<{ data: null }>();
+    h.status.mockReturnValueOnce(oldRead.promise);
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    h.start.mockRejectedValueOnce(new Error("Response timed out"));
+    await act(async () => result.rescan());
+    await advance(2400);
+    await act(async () => oldRead.resolve({ data: null }));
+    expect(result.canRescan).toBe(false);
+
+    h.status.mockResolvedValue({ data: session("running") });
+    await advance();
+    expect(result.rescanning).toBe(true);
+    h.status.mockResolvedValue({ data: session("completed") });
+    await advance();
+    expect(result.rescanning).toBe(false);
+    expect(h.complete).toHaveBeenCalledExactlyOnceWith(session("completed"), true);
+    expect(h.start).toHaveBeenCalledOnce();
   });
 
   it("stops readers on unmount without cancelling the server scan or publishing late results", async () => {

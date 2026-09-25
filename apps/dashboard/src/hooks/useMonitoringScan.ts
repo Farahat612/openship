@@ -122,6 +122,9 @@ export function useMonitoringScan({
         schedule(Math.min(15_000, 1200 * 2 ** Math.min(failures++, 4)));
       } finally {
         reading = false;
+        // A newer POST can schedule its poll while this older GET is still
+        // pending. If that timer fired, restore it after discarding this result.
+        if (current(organizationId) && version !== revision && !starting) schedule();
         refreshChangedScope(organizationId);
       }
     };
