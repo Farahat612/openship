@@ -159,7 +159,7 @@
     "checking": "Wird geprüft…",
     "notConnectedManage": "Nicht verbunden — in den Einstellungen verwalten",
     "optional": "Optional",
-    "footnote": "Lokale Bibliothek über gh CLI; Remote-Deploys nutzen kurzlebige Tokens —",
+    "footnote": "Verwalte die GitHub-Verbindungen zum Durchsuchen und Bereitstellen von Repositories.",
     "manageGithubSettings": "GitHub in den Einstellungen verwalten"
   },
   "urlImport": {

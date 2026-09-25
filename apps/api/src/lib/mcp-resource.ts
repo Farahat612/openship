@@ -67,6 +67,17 @@ export function publicOriginFor(req: Request): string {
 }
 
 /**
+ * The MCP path the client connected to, before the dashboard proxy stripped its
+ * prefix. Only known MCP paths can select a discovery document; a forwarded
+ * value cannot introduce another resource or change the public origin.
+ */
+export function requestMcpResourcePath(req: Request): string {
+  const path = req.headers.get("x-forwarded-uri")?.split("?")[0] ?? new URL(req.url).pathname;
+  const normalized = path.replace(/\/+$/, "");
+  return MCP_RESOURCE_PATHS.includes(normalized) ? normalized : MCP_RESOURCE_PATH;
+}
+
+/**
  * The request's own URL rewritten onto the PUBLIC origin.
  *
  * `request.url` is the origin the API was reached on internally. Behind the

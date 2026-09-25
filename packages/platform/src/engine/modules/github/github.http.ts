@@ -33,6 +33,22 @@ export interface GhRequest {
   headers?: Record<string, string>;
 }
 
+/** Machine-readable failure details; callers must not infer retry policy from
+ * translated/upstream error text or retry mutations after an auth failure. */
+export class GitHubApiError extends Error {
+  readonly credentialRejected: boolean;
+
+  constructor(readonly status: number, message: string, headers: Headers) {
+    super(`GitHub API error (${status}): ${message}`);
+    this.name = "GitHubApiError";
+    const rateLimited = status === 429 || (status === 403 && (
+      headers.get("x-ratelimit-remaining") === "0" || headers.has("retry-after") ||
+      /rate limit|abuse detection/i.test(message)
+    ));
+    this.credentialRejected = !rateLimited && (status === 401 || status === 403);
+  }
+}
+
 function ghHeaders(token: string, extra?: Record<string, string>): Record<string, string> {
   return {
     Authorization: `Bearer ${token}`,
@@ -99,9 +115,7 @@ export async function ghFetch<T = unknown>(token: string, req: GhRequest): Promi
 
   const data = (await res.json()) as T & { message?: string };
   if (!res.ok) {
-    throw new Error(
-      `GitHub API error (${res.status}): ${(data as { message?: string }).message ?? "Unknown"}`,
-    );
+    throw new GitHubApiError(res.status, (data as { message?: string }).message ?? "Unknown", res.headers);
   }
   return data;
 }
@@ -135,13 +149,16 @@ export async function ghFetchSoft<T = unknown>(token: string, req: GhRequest): P
  */
 export async function ghFetchPublic<T = unknown>(req: GhRequest): Promise<T | null> {
   try {
+    const headers = {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...Object.fromEntries(Object.entries(req.headers ?? {}).filter(([name]) =>
+        !["authorization", "cookie"].includes(name.toLowerCase()),
+      )),
+    };
     const res = await timedFetch(withQuery(req.url, "GET", req.params), {
       method: "GET",
-      headers: {
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        ...(req.headers ?? {}),
-      },
+      headers,
     });
     if (res.status === 204) return { success: true } as T;
     if (!res.ok) return null;

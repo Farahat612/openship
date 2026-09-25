@@ -115,7 +115,11 @@
       "disconnectPrefix": "Pour déconnecter, exécutez",
       "disconnectSuffix": "dans votre terminal.",
       "use": "Utiliser la CLI gh"
-    }
+    },
+    "replaceToken": "Remplacer le jeton GitHub",
+    "clearToken": "Effacer le jeton enregistré",
+    "tokenEditorDescription": "Utilisez un jeton d’accès personnel GitHub pour parcourir les dépôts et compiler sur cette instance.",
+    "methodTokenDesc": "Utilisez un jeton GitHub pour parcourir les dépôts et compiler localement."
   },
   "deployDefaults": {
     "title": "Valeurs par défaut de déploiement",

@@ -177,4 +177,30 @@ describe("GitHub operations shared by SDK and HTTP", () => {
     await c.native.servers.disconnectGitHub(server);
     expect(await c.remote.servers.githubStatus(server)).toEqual({ mode: null, connected: false, deployKeyCount: 0 });
   });
+
+  it("clears the saved instance token through HTTP and native SDK without disconnecting the App", async () => {
+    const admin = await seedOwner({ instanceAdmin: true });
+    const c = await clients(admin);
+    const unlink = vi.spyOn(repos.account, "unlinkProvider");
+    try {
+      for (const client of [c.native, c.remote]) {
+        await setStoredDeviceToken("rejected-library-token", "token");
+        expect((await repos.instanceSettings.get())?.ghDeviceTokenEncrypted).toBeTruthy();
+        expect(await client.github.disconnect({ source: "cli" })).toEqual({ success: true, source: "cli" });
+        expect(await repos.instanceSettings.get()).toMatchObject({ ghDeviceTokenEncrypted: null, ghDeviceTokenMethod: null });
+      }
+      expect(unlink).not.toHaveBeenCalled();
+    } finally { unlink.mockRestore(); }
+  });
+
+  it("does not report a saved token as cleared when persistence fails", async () => {
+    const admin = await seedOwner({ instanceAdmin: true });
+    const c = await clients(admin);
+    await setStoredDeviceToken("rejected-library-token", "token");
+    const write = vi.spyOn(repos.instanceSettings, "upsert").mockRejectedValueOnce(new Error("Credential storage unavailable"));
+    try {
+      await expect(c.native.github.disconnect({ source: "cli" })).rejects.toThrow("Credential storage unavailable");
+      expect((await repos.instanceSettings.get())?.ghDeviceTokenEncrypted).toBeTruthy();
+    } finally { write.mockRestore(); }
+  });
 });

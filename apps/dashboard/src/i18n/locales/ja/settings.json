@@ -115,7 +115,11 @@
       "disconnectPrefix": "切断するには、次を実行してください:",
       "disconnectSuffix": "ターミナルで実行します。",
       "use": "gh CLI を使用"
-    }
+    },
+    "replaceToken": "GitHubトークンを置き換える",
+    "clearToken": "保存済みトークンを削除",
+    "tokenEditorDescription": "GitHubの個人アクセストークンを使用して、リポジトリの閲覧やこのインスタンスでのビルドを行います。",
+    "methodTokenDesc": "GitHubトークンを使用して、リポジトリの閲覧やローカルビルドを行います。"
   },
   "deployDefaults": {
     "title": "デプロイのデフォルト",

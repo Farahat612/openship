@@ -10,11 +10,11 @@ import { repos, type Permission } from "@repo/db";
 import { secureRouter } from "../../lib/secure-router";
 import { parseBearerToken } from "../../lib/bearer";
 import {
-  MCP_RESOURCE_PATH,
   allowedMcpResources,
   canonicalizeResource,
   protectedResourceMetadataUrl,
   publicOriginFor,
+  requestMcpResourcePath,
 } from "../../lib/mcp-resource";
 import { readTokenAudience } from "../../lib/mcp-token";
 import { resolveActiveOrganizationId } from "../../middleware/active-organization";
@@ -131,7 +131,7 @@ const PUBLIC_REASON =
 
 /**
  * Resource-server 401. `WWW-Authenticate` points at the PATH-AWARE Protected
- * Resource Metadata for the canonical MCP URL (RFC 9728 §5.1) — the root
+ * Resource Metadata for the requested MCP URL (RFC 9728 §5.1) — the root
  * document describes the origin, not this endpoint, and a strict client that
  * follows the pointer must land on metadata whose `resource` matches the URL it
  * connected to. Built from the PUBLIC origin (forwarded host), not the loopback
@@ -141,7 +141,7 @@ function unauthorized(c: Context, message: string) {
   return c.json(jsonRpcError(null, -32001, message), 401, {
     "WWW-Authenticate": `Bearer resource_metadata="${protectedResourceMetadataUrl(
       publicOriginFor(c.req.raw),
-      MCP_RESOURCE_PATH,
+      requestMcpResourcePath(c.req.raw),
     )}"`,
     "Access-Control-Expose-Headers": "WWW-Authenticate",
   });

@@ -97,10 +97,15 @@ function buildForwardedHeaders(req: NextRequest, upstream: URL): Headers {
   }
   // Original protocol + host so Better Auth's cookie-domain logic
   // sees the public-facing scheme/host (not loopback).
-  const proto = req.headers.get("x-forwarded-proto") ?? new URL(req.url).protocol.replace(":", "");
-  const host = req.headers.get("x-forwarded-host") ?? new URL(req.url).host;
+  const requestUrl = new URL(req.url);
+  const proto = req.headers.get("x-forwarded-proto") ?? requestUrl.protocol.replace(":", "");
+  const host = req.headers.get("x-forwarded-host") ?? requestUrl.host;
   out.set("x-forwarded-proto", proto);
   out.set("x-forwarded-host", host);
+  // OAuth resource identity includes the public path. Next retains the original
+  // req.url when /api/mcp rewrites here, so it stays distinct from an explicit
+  // /api/proxy/api/mcp request. Overwrite any client-supplied value.
+  out.set("x-forwarded-uri", requestUrl.pathname);
   // Override Host so HTTP/1.1 routing on the upstream points at the
   // upstream's authority, not the original public host.
   out.set("host", upstream.host);

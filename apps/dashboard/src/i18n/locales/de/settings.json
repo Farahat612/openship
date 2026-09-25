@@ -115,7 +115,11 @@
       "disconnectPrefix": "Zum Trennen führe",
       "disconnectSuffix": "in deinem Terminal aus.",
       "use": "gh CLI verwenden"
-    }
+    },
+    "replaceToken": "GitHub-Token ersetzen",
+    "clearToken": "Gespeicherten Token löschen",
+    "tokenEditorDescription": "Verwende einen persönlichen GitHub-Zugriffstoken, um Repositories zu durchsuchen und auf dieser Instanz zu bauen.",
+    "methodTokenDesc": "Verwende einen GitHub-Token zum Durchsuchen von Repositories und für lokale Builds."
   },
   "deployDefaults": {
     "title": "Deploy-Standardwerte",

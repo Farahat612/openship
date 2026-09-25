@@ -155,7 +155,11 @@
       "disconnectPrefix": "Bağlantıyı kesmek için terminalinizde",
       "disconnectSuffix": "çalıştırın.",
       "use": "gh CLI Kullan"
-    }
+    },
+    "replaceToken": "GitHub belirtecini değiştir",
+    "clearToken": "Kayıtlı belirteci sil",
+    "tokenEditorDescription": "Depoları görüntülemek ve bu kurulumda derleme yapmak için GitHub kişisel erişim belirteci kullanın.",
+    "methodTokenDesc": "Depoları görüntülemek ve yerel derlemeler için GitHub belirteci kullanın."
   },
   "deployDefaults": {
     "title": "Dağıtım Varsayılanları",
