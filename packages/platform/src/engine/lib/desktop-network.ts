@@ -1,5 +1,5 @@
 import { networkInterfaces } from "node:os";
-import { getPlatform } from "@repo/adapters";
+import { peekPlatform } from "@repo/adapters";
 
 /**
  * An offline desktop cannot observe its remote servers. Check the machine that
@@ -11,7 +11,9 @@ import { getPlatform } from "@repo/adapters";
  * endpoint is required, so isolated LANs keep working.
  */
 export function desktopNetworkDisconnected(): boolean {
-  if (getPlatform().target !== "desktop") return false;
+  // Cached issue feeds also work before host adapters are initialized. Without
+  // a desktop observer, local network state is unknown rather than offline.
+  if (peekPlatform()?.target !== "desktop") return false;
   try {
     return !Object.values(networkInterfaces()).some((addresses) =>
       addresses?.some((address) => !address.internal),
