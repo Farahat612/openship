@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { Type } from "@sinclair/typebox";
+import { IssueJobSchemas, parseInput } from "@repo/contracts";
+import { handleApiError } from "../../src/middleware/error-handler";
 
 /**
  * `spec.body` is the single source of truth for a route's JSON body: secureRouter
@@ -40,6 +42,7 @@ const Body = Type.Object({ name: Type.String() });
 
 function buildApp() {
   const app = new Hono();
+  app.onError(handleApiError);
   app.use("*", (c, n) => {
     c.set("clientIp" as never, "1.2.3.4");
     return n();
@@ -49,6 +52,13 @@ function buildApp() {
     c.json({ ok: true, got: await c.req.json() }),
   );
   r.post("/no-body", { resource: "project", action: "write" } as never, (c) => c.json({ ok: true }));
+  r.post("/operation", {
+    tag: "job:write", body: IssueJobSchemas.rescan.input, bodyValidatedByOperation: true,
+  }, async c => {
+    const text = await c.req.text();
+    const input = parseInput(IssueJobSchemas.rescan.input, text ? JSON.parse(text) : {});
+    return c.json({ input });
+  });
   app.route("/api/t", r.hono);
   return app;
 }
@@ -81,5 +91,16 @@ describe("secureRouter auto-wires validation from spec.body", () => {
   it("routes without spec.body are not validated", async () => {
     const res = await post(buildApp(), "/api/t/no-body", { anything: true });
     expect(res.status).toBe(200);
+  });
+
+  it("preserves optional bodies when their shared operation owns validation", async () => {
+    const response = await buildApp().request("/api/t/operation", { method: "POST", headers: { "Content-Type": "application/json" } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ input: {} });
+  });
+
+  it("still rejects malformed operation input through the shared contract", async () => {
+    const response = await post(buildApp(), "/api/t/operation", { healthOnly: "yes" });
+    expect(response.status).toBe(400);
   });
 });

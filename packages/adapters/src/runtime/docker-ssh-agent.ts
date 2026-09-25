@@ -378,9 +378,9 @@ function sentence(text: string): string {
 }
 
 /** The message dockerode's caller ends up reading. `cause` is the part we actually know. */
-function bridgeFailureReason(opts: DockerConnectionOptions, cause: string): string {
+function bridgeFailureReason(opts: DockerConnectionOptions, cause: string, dockerHint = true): string {
   const host = opts.host?.trim() || "the remote host";
-  return `Could not reach the Docker daemon on ${host} over SSH: ${sentence(cause)} ${BRIDGE_FAILURE_HINT}`;
+  return `Could not reach the Docker daemon on ${host} over SSH: ${sentence(cause)}${dockerHint ? ` ${BRIDGE_FAILURE_HINT}` : ""}`;
 }
 
 /**
@@ -796,7 +796,9 @@ export function createDockerSshBridge(opts: DockerConnectionOptions): DockerSshB
       console.warn(
         `[docker-ssh] bridge client failed (${opts.host ?? "?"}): ${safeErrorMessage(err)}`,
       );
-      capture.fail(bridgeFailureReason(opts, safeErrorMessage(err)));
+      // No Docker response was obtained. An SSH connection/authentication failure
+      // already explains the problem; it is not evidence of a missing daemon.
+      capture.fail(bridgeFailureReason(opts, safeErrorMessage(err), false));
     }
   };
 

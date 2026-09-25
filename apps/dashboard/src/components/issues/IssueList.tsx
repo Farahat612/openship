@@ -19,11 +19,15 @@ export function IssueList({
   busyId,
   onResolve,
   onInfraFix,
+  onRecheck,
+  rechecking,
 }: {
   issues: SystemIssue[];
   busyId: string | null;
   onResolve: (issue: SystemIssue) => void;
   onInfraFix: (issue: SystemIssue) => void;
+  onRecheck?: () => void;
+  rechecking?: boolean;
 }) {
   // Insertion order is preserved per bucket, so the server's severity ranking
   // survives grouping and each panel's first row is its worst.
@@ -62,6 +66,8 @@ export function IssueList({
           busyId={busyId}
           onResolve={onResolve}
           onInfraFix={onInfraFix}
+          onRecheck={onRecheck}
+          rechecking={rechecking}
         />
       ))}
     </div>

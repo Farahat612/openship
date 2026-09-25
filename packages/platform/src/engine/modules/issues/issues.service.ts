@@ -52,6 +52,7 @@ import {
   type ContainerIssue,
 } from "@repo/platform/engine/modules/system/server-containers.service";
 import { listOrganizationUpdates } from "@repo/platform/engine/modules/updates/updates.service";
+import { desktopNetworkDisconnected } from "../../lib/desktop-network";
 
 // ─── Shape ──────────────────────────────────────────────────────────────────
 
@@ -83,6 +84,7 @@ export type IssueKind =
   | "workload_crash_loop"
   | "workload_down"
   | "server_unreachable"
+  | "monitoring_offline"
   | "edge_down"
   | "edge_absent"
   | "mail_down"
@@ -167,7 +169,8 @@ const INCIDENT_KIND: Record<IncidentKind, { kind: IssueKind; severity: IssueSeve
   unhealthy: { kind: "workload_unhealthy", severity: "action_required" },
   crash_loop: { kind: "workload_crash_loop", severity: "outage" },
   down: { kind: "workload_down", severity: "outage" },
-  server_unreachable: { kind: "server_unreachable", severity: "outage" },
+  // An SSH failure establishes a gap in observation, not a workload outage.
+  server_unreachable: { kind: "server_unreachable", severity: "action_required" },
 };
 
 function incidentIssue(
@@ -456,6 +459,20 @@ export async function listOrganizationIssues(
   ]);
 
   const issues: SystemIssue[] = [];
+
+  if (infra && desktopNetworkDisconnected()) {
+    issues.push({
+      id: "platform:monitoring-offline",
+      kind: "monitoring_offline",
+      severity: "action_required",
+      scope: "platform",
+      source: "component",
+      title: "This desktop is offline",
+      message: "The machine running Openship has no active network connection. Remote server health cannot be checked. Reconnect, then recheck monitoring.",
+      target: { scope: "platform", id: "desktop", name: "Openship", href: "/monitoring" },
+      resolveWith: [],
+    });
+  }
 
   // Worst-first at the source level too, so the merge order matches the tiers and
   // ties inside a tier stay stable across polls.

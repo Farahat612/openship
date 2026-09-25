@@ -16,12 +16,14 @@ const mocks = vi.hoisted(() => ({
   serverIds: ["one", "two"],
   selfHosted: true,
   rescanStatus: vi.fn(),
+  rescan: vi.fn(),
+  deployMode: "docker",
 }));
 vi.mock("@/context/ModalContext", () => ({
   useModal: () => ({ showModal: mocks.showModal, hideModal: mocks.hideModal }),
 }));
 vi.mock("@/context/PlatformContext", () => ({
-  usePlatform: () => ({ selfHosted: mocks.selfHosted }),
+  usePlatform: () => ({ selfHosted: mocks.selfHosted, deployMode: mocks.deployMode }),
 }));
 vi.mock("@/components/toast", () => ({ useToast: () => ({ toast: mocks.toast }) }));
 vi.mock("@/components/issues/MonitoringHealth", () => ({
@@ -30,7 +32,7 @@ vi.mock("@/components/issues/MonitoringHealth", () => ({
 vi.mock("@/lib/api", () => ({
   getApiBaseUrl: () => "http://localhost/api/",
   getApiErrorMessage: (_: unknown, fallback: string) => fallback,
-  issuesApi: { list: mocks.list, rescanStatus: mocks.rescanStatus },
+  issuesApi: { list: mocks.list, rescanStatus: mocks.rescanStatus, rescan: mocks.rescan },
   systemApi: { getInstallSession: mocks.install, listServerContainers: mocks.containers },
 }));
 vi.mock("@/hooks/useInfraFleet", () => ({
@@ -111,6 +113,8 @@ beforeEach(() => {
   fetcher.mockReset();
   mocks.serverIds = ["one", "two"];
   mocks.selfHosted = true;
+  mocks.deployMode = "docker";
+  mocks.rescan.mockReset();
   mocks.rescanStatus.mockReset().mockResolvedValue({ data: null });
   mocks.install.mockReset().mockResolvedValue({ active: false });
   mocks.containers.mockReset().mockResolvedValue([]);
@@ -212,6 +216,67 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+describe("monitoring connection recovery", () => {
+  const running = { id: "scan-1", status: "running", startedAt: "2026-09-26T00:00:00Z", stages: [{ key: "services:health-watch", status: "running" }] };
+  const done = { ...running, status: "completed", stages: [{ key: "services:health-watch", status: "completed", summary: { resolved: 1, unreachable: 0 } }] };
+
+  it("rechecks an unreachable row, disables repeat clicks and removes the recovered incident", async () => {
+    vi.useFakeTimers();
+    mocks.list.mockResolvedValue({ data: [{
+      id: "incident:server", kind: "server_unreachable", severity: "action_required", scope: "server", source: "incident",
+      title: "Remote server", message: "SSH handshake timed out", resolveWith: [],
+      target: { scope: "server", id: "one", name: "Remote server", href: "/servers/one" },
+    }], counts: { total: 1, outage: 0, actionRequired: 1, advisory: 0 } });
+    mocks.rescan.mockResolvedValue({ data: running });
+    await render();
+    expect(container.textContent).toContain("Container health is unknown");
+    await click("Recheck");
+    expect(mocks.rescan).toHaveBeenCalledExactlyOnceWith({ healthOnly: true });
+    expect(buttons("Scanning").every(button => button.disabled)).toBe(true);
+
+    mocks.list.mockResolvedValue({ data: [], counts: { total: 0, outage: 0, actionRequired: 0, advisory: 0 } });
+    mocks.rescanStatus.mockResolvedValue({ data: done });
+    await act(async () => vi.advanceTimersByTimeAsync(1200));
+    expect(container.textContent).not.toContain("SSH handshake timed out");
+    expect(buttons("Scanning")).toHaveLength(0);
+    expect(mocks.reload).toHaveBeenCalledOnce();
+  });
+
+  it("distinguishes a disconnected desktop and starts one health check after reconnecting", async () => {
+    mocks.deployMode = "desktop";
+    const online = vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+    mocks.rescan.mockResolvedValue({ data: running });
+    await render();
+    expect(container.textContent).toContain("This device is offline");
+    expect(mocks.rescan).not.toHaveBeenCalled();
+    online.mockReturnValue(true);
+    await act(async () => window.dispatchEvent(new Event("online")));
+    expect(container.textContent).not.toContain("This device is offline");
+    expect(mocks.rescan).toHaveBeenCalledExactlyOnceWith({ healthOnly: true });
+  });
+
+  it("refreshes recovered incidents from the background watcher without running a scan", async () => {
+    vi.useFakeTimers();
+    await render();
+    mocks.list.mockResolvedValue({ data: [], counts: { total: 0, outage: 0, actionRequired: 0, advisory: 0 } });
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+    expect(container.textContent).not.toContain("Edge stopped");
+    expect(mocks.rescan).not.toHaveBeenCalled();
+  });
+
+  it("does not claim nothing needs attention when the feed could not be read", async () => {
+    mocks.list.mockRejectedValueOnce(new Error("Connection lost"));
+    await render();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn't load monitoring");
+    expect(container.textContent).not.toContain("Nothing needs attention");
+    mocks.list.mockResolvedValue({ data: [], counts: { total: 0, outage: 0, actionRequired: 0, advisory: 0 } });
+    await click("Retry status");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
 });
 
 describe("Issues page operation logs (#660)", () => {

@@ -63,12 +63,16 @@ export const issuesDependencies: IssueDependencies = {
   },
   jobs: {
     async rescanStatus(ctx) { assertSelfHosted(); await instanceAuthorization.assert(ctx, "read"); return activeRescan; },
-    async rescan(ctx) {
+    async rescan(ctx, input = {}) {
       assertSelfHosted();
       await instanceAuthorization.assert(ctx);
       assertNativeJobs();
       if (activeRescan?.status === "running") return activeRescan;
-      const available = RESCAN_JOBS.filter(key => systemJobAvailability(key) === "available");
+      // Recovery of an observation gap must not also run infra's opted-in
+      // auto-updates or domain reconciliation. Reuse the health job alone.
+      const available = RESCAN_JOBS.filter(key =>
+        (!input.healthOnly || key === HEALTH_WATCH_JOB) && systemJobAvailability(key) === "available",
+      );
       const session: IssueRescan = activeRescan = {
         id: randomUUID(), status: "running", startedAt: new Date().toISOString(),
         stages: RESCAN_JOBS.map(key => ({ key, status: available.includes(key) ? "pending" : "skipped" })),
