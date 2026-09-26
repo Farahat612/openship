@@ -35,6 +35,13 @@ export function useMonitoringScan({
   const complete = useRef(onComplete);
   complete.current = onComplete;
   const lastScan = useRef<MonitoringScanSession | null>(null);
+  // Admission may finish while offline. Retain its intent until a status read
+  // identifies a new scan or confirms there is nothing to reattach to.
+  const pendingScan = useRef<{
+    organizationId: string | null;
+    previousId: string | undefined;
+    notify: boolean;
+  } | null>(null);
   const wasOffline = useRef(!online);
   const controls = useRef<{ start: (healthOnly: boolean) => void; refresh: () => void } | null>(null);
 
@@ -49,7 +56,6 @@ export function useMonitoringScan({
     let permitted = false;
     let revision = 0;
     let failures = 0;
-    let notify = false;
     let recheck = reconnect && recheckOnReconnect;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const current = (organizationId: string | null) =>
@@ -64,7 +70,7 @@ export function useMonitoringScan({
     const refreshChangedScope = (organizationId: string | null) => {
       if (disposed || organizationId === getActiveOrganizationId()) return;
       permitted = false;
-      notify = false;
+      pendingScan.current = null;
       lastScan.current = null;
       setScan(null);
       setRescanning(false);
@@ -74,6 +80,9 @@ export function useMonitoringScan({
 
     const accept = (session: MonitoringScanSession | null) => {
       const previous = lastScan.current;
+      const requested = pendingScan.current?.organizationId === getActiveOrganizationId()
+        ? pendingScan.current
+        : null;
       lastScan.current = session;
       setScan(session);
       setRescanning(session?.status === "running");
@@ -82,9 +91,12 @@ export function useMonitoringScan({
         schedule();
       } else {
         clearTimer();
-        if (session && (starting || (previous?.id === session.id && previous.status === "running"))) {
-          void complete.current(session, notify);
-          notify = false;
+        pendingScan.current = null;
+        if (session && (
+          (requested && session.id !== requested.previousId) ||
+          (previous?.id === session.id && previous.status === "running")
+        )) {
+          void complete.current(session, requested?.notify ?? false);
         }
         // A reconnect during an older scan earns ONE fresh pass after it ends.
         // Reusing that scan alone could leave its pre-reconnect failures in place.
@@ -113,6 +125,7 @@ export function useMonitoringScan({
         const status = (err as { status?: number } | null)?.status;
         if (status === 401 || status === 403 || status === 404) {
           permitted = false;
+          pendingScan.current = null;
           setCanRescan(false);
           setRescanning(false);
           return;
@@ -137,8 +150,8 @@ export function useMonitoringScan({
       clearTimer();
       setRescanning(true);
       setError(null);
-      notify = showResult;
       const organizationId = getActiveOrganizationId();
+      pendingScan.current = { organizationId, previousId: lastScan.current?.id, notify: showResult };
       try {
         const result = await issuesApi.rescan({ healthOnly });
         if (!current(organizationId)) return;

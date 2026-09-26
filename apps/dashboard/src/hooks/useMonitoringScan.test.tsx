@@ -108,6 +108,87 @@ describe("monitoring scan admission and recovery", () => {
     expect(h.start).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ["no previous scan", null],
+    ["a previous completed scan", session("completed", "old-scan")],
+  ] as const)("refreshes once when a lost start response recovers directly to completion with %s", async (_, previous) => {
+    h.status.mockResolvedValue({ data: previous });
+    await render();
+    h.start.mockRejectedValueOnce(new Error("Response timed out"));
+    await act(async () => result.rescan());
+
+    h.status.mockResolvedValue({ data: session("completed", "new-scan") });
+    await advance();
+    expect(result.rescanning).toBe(false);
+    expect(result.scan?.id).toBe("new-scan");
+    expect(h.complete).toHaveBeenCalledExactlyOnceWith(session("completed", "new-scan"), true);
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await advance(60_000);
+    expect(h.complete).toHaveBeenCalledOnce();
+    expect(h.start).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["no scan", null],
+    ["the previous completed scan", session("completed", "old-scan")],
+  ] as const)(
+    "does not report completion when recovery finds %s",
+    async (_, previous) => {
+      h.status.mockResolvedValue({ data: previous });
+      await render();
+      h.start.mockRejectedValueOnce(new Error("Response timed out"));
+      await act(async () => result.rescan());
+      await advance();
+      expect(result.canRescan).toBe(true);
+      expect(h.complete).not.toHaveBeenCalled();
+
+      // A later scan from another reader must not inherit the failed request's notification.
+      h.status.mockResolvedValue({ data: session("running", "external-scan") });
+      await act(async () => result.refresh());
+      h.status.mockResolvedValue({ data: session("completed", "external-scan") });
+      await advance();
+      expect(h.complete).toHaveBeenCalledExactlyOnceWith(session("completed", "external-scan"), false);
+      expect(h.start).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("handles an immediately completed admission once", async () => {
+    h.start.mockResolvedValue({ data: session("completed") });
+    await render();
+    await act(async () => result.rescan());
+    h.status.mockResolvedValue({ data: session("completed") });
+    await act(async () => result.refresh());
+    expect(result.rescanning).toBe(false);
+    expect(h.complete).toHaveBeenCalledExactlyOnceWith(session("completed"), true);
+    expect(h.start).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a pending admission across reconnect and ignores its late response", async () => {
+    await render({ recheckOnReconnect: false });
+    const admission = deferred<{ data: MonitoringScanSession }>();
+    h.start.mockReturnValueOnce(admission.promise);
+    await act(async () => result.rescan());
+    await render({ online: false });
+    h.status.mockResolvedValue({ data: session("completed") });
+    await render({ online: true });
+    await act(async () => admission.resolve({ data: session("completed") }));
+    await act(async () => result.refresh());
+    expect(result.rescanning).toBe(false);
+    expect(h.complete).toHaveBeenCalledExactlyOnceWith(session("completed"), true);
+    expect(h.start).toHaveBeenCalledOnce();
+  });
+
+  it("does not carry a lost admission into a different organization", async () => {
+    await render();
+    h.start.mockRejectedValueOnce(new Error("Response timed out"));
+    await act(async () => result.rescan());
+    h.organizationId = "org-2";
+    h.status.mockResolvedValue({ data: session("completed", "other-scan") });
+    await advance();
+    expect(h.complete).not.toHaveBeenCalled();
+    expect(h.start).toHaveBeenCalledOnce();
+  });
+
   it("checks once after desktop reconnect, without repeating POSTs on focus or rerender", async () => {
     await render({ online: false });
     expect(h.status).not.toHaveBeenCalled();

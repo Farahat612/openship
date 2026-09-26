@@ -98,7 +98,7 @@ export function IssuesView() {
   const activeTab = useRef(tab);
   activeTab.current = tab;
   const loadVersion = useRef(0);
-  const pendingLoad = useRef<{ key: string; promise: Promise<void> } | null>(null);
+  const pendingLoad = useRef<{ key: string; promise: Promise<void>; refresh?: Promise<void> } | null>(null);
 
   useEffect(() => {
     mounted.current = true;
@@ -117,18 +117,26 @@ export function IssuesView() {
     (opts: { silent?: boolean; fresh?: boolean } = {}): Promise<void> => {
       // The Health tab has its own cached snapshot reader. Open-feed counts
       // continue refreshing in the sidebar; this hidden list needs no polling.
-      if (tab === "health" || !mounted.current) return Promise.resolve();
       const organizationId = getActiveOrganizationId();
+      const inScope = () => mounted.current && activeTab.current === tab &&
+        organizationId === getActiveOrganizationId();
+      if (tab === "health" || !inScope()) return Promise.resolve();
       const key = `${organizationId}:${tab}`;
       const pending = pendingLoad.current;
       if (pending?.key === key) {
-        return opts.fresh
-          ? pending.promise.then(() => load({ ...opts, fresh: false }))
-          : pending.promise;
+        if (!opts.fresh) return pending.promise;
+        const version = loadVersion.current;
+        // Share one follow-up read and discard it if navigation or newer work
+        // supersedes the request that queued it.
+        pending.refresh ??= pending.promise.then(() => {
+          if (inScope() && version === loadVersion.current) {
+            return load({ ...opts, fresh: false });
+          }
+        });
+        return pending.refresh;
       }
       const version = ++loadVersion.current;
-      const current = () => mounted.current && activeTab.current === tab &&
-        version === loadVersion.current && organizationId === getActiveOrganizationId();
+      const current = () => inScope() && version === loadVersion.current;
       const promise = (async () => {
         if (!opts.silent) setLoading(true);
         try {

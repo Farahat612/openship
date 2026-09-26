@@ -3,6 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@/components/i18n-provider";
+import { setActiveOrganizationId } from "@/lib/api/client";
+import type { IssueFeed } from "@/lib/api/issues";
 import { IssuesView } from "./IssuesView";
 
 const mocks = vi.hoisted(() => ({
@@ -138,6 +140,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("fetch", fetcher);
   localStorage.clear();
+  setActiveOrganizationId("org-1");
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -215,6 +218,7 @@ describe("Monitoring health navigation", () => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  setActiveOrganizationId(null);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.useRealTimers();
@@ -223,6 +227,127 @@ afterEach(async () => {
 describe("monitoring connection recovery", () => {
   const running = { id: "scan-1", status: "running", startedAt: "2026-09-26T00:00:00Z", stages: [{ key: "services:health-watch", status: "running" }] };
   const done = { ...running, status: "completed", stages: [{ key: "services:health-watch", status: "completed", summary: { resolved: 1, unreachable: 0 } }] };
+  const emptyFeed: IssueFeed = {
+    data: [],
+    counts: { total: 0, outage: 0, actionRequired: 0, advisory: 0 },
+    status: "open",
+  };
+  const recoveredFeed: IssueFeed = {
+    data: [{
+      id: "recovered-server", kind: "server_unreachable", severity: "action_required", scope: "server", source: "incident",
+      title: "Recovered server", message: "History response has arrived", resolveWith: [], resolvedAt: "2026-09-26T00:01:00Z",
+      target: { scope: "server", id: "one", name: "Recovered server", href: "/servers/one" },
+    }],
+    counts: { total: 1, outage: 0, actionRequired: 1, advisory: 0 },
+    status: "resolved",
+  };
+
+  async function finishScanWhileFeedLoads() {
+    vi.useFakeTimers();
+    mocks.rescan.mockResolvedValue({ data: running });
+    await render();
+    await click("Re-scan");
+    mocks.rescanStatus.mockResolvedValue({ data: running });
+    const pending = deferred<IssueFeed>();
+    mocks.list.mockReturnValueOnce(pending.promise);
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    mocks.rescanStatus.mockResolvedValue({ data: done });
+    await act(async () => vi.advanceTimersByTimeAsync(1200));
+    expect(mocks.reload).toHaveBeenCalledOnce();
+    return pending;
+  }
+
+  it("refreshes once after a scan completes during an existing feed read", async () => {
+    const pending = await finishScanWhileFeedLoads();
+    mocks.list.mockResolvedValue(emptyFeed);
+    await act(async () => {
+      for (let n = 0; n < 5; n++) window.dispatchEvent(new Event("focus"));
+    });
+    expect(mocks.list).toHaveBeenCalledTimes(2);
+    await act(async () => pending.resolve(emptyFeed));
+    expect(mocks.list).toHaveBeenCalledTimes(3);
+    expect(container.textContent).not.toContain("Edge stopped");
+    expect(mocks.reload).toHaveBeenCalledOnce();
+    expect(mocks.toast).toHaveBeenCalledOnce();
+  });
+
+  it("shares the queued refresh and waits for its response before reporting completion", async () => {
+    const pending = await finishScanWhileFeedLoads();
+    mocks.rescan.mockResolvedValue({ data: { ...running, id: "scan-2" } });
+    await click("Re-scan");
+    mocks.rescanStatus.mockResolvedValue({ data: { ...done, id: "scan-2" } });
+    await act(async () => vi.advanceTimersByTimeAsync(1200));
+    expect(mocks.reload).toHaveBeenCalledTimes(2);
+
+    const fresh = deferred<IssueFeed>();
+    mocks.list.mockReturnValueOnce(fresh.promise);
+    await act(async () => pending.resolve(emptyFeed));
+    expect(mocks.list).toHaveBeenCalledTimes(3);
+    expect(mocks.toast).not.toHaveBeenCalled();
+    await act(async () => fresh.resolve(emptyFeed));
+    expect(mocks.list).toHaveBeenCalledTimes(3);
+    expect(mocks.toast).toHaveBeenCalledTimes(2);
+    expect(mocks.rescan).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps History's response when an older Overview refresh was queued", async () => {
+    const pendingOverview = await finishScanWhileFeedLoads();
+    const pendingHistory = deferred<IssueFeed>();
+    mocks.list.mockImplementation(status => status === "resolved" ? pendingHistory.promise : Promise.resolve(emptyFeed));
+    await click("History");
+    expect(mocks.list).toHaveBeenLastCalledWith("resolved");
+    await act(async () => pendingOverview.resolve(emptyFeed));
+    await act(async () => pendingHistory.resolve(recoveredFeed));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("History");
+    expect(container.textContent).toContain("History response has arrived");
+    expect(mocks.list).toHaveBeenCalledTimes(3);
+  });
+
+  it("discards a queued feed refresh after switching to Health", async () => {
+    const pendingOverview = await finishScanWhileFeedLoads();
+    await click("Health");
+    await act(async () => pendingOverview.resolve(emptyFeed));
+    expect(container.textContent).toContain("Container health content");
+    expect(mocks.list).toHaveBeenCalledTimes(2);
+  });
+
+  it("discards an obsolete refresh after leaving and returning to Overview", async () => {
+    const pendingOverview = await finishScanWhileFeedLoads();
+    mocks.list.mockResolvedValue(emptyFeed);
+    await click("History");
+    await click("Overview");
+    const reads = mocks.list.mock.calls.length;
+    await act(async () => pendingOverview.resolve(recoveredFeed));
+    expect(mocks.list).toHaveBeenCalledTimes(reads);
+    expect(container.textContent).not.toContain("History response has arrived");
+  });
+
+  it("keeps the new workspace's response when an old workspace refresh was queued", async () => {
+    const pendingOverview = await finishScanWhileFeedLoads();
+    const pendingWorkspace = deferred<IssueFeed>();
+    mocks.list.mockReturnValueOnce(pendingWorkspace.promise);
+    await act(async () => {
+      setActiveOrganizationId("org-2");
+      window.dispatchEvent(new Event("focus"));
+    });
+    await act(async () => pendingOverview.resolve(emptyFeed));
+    await act(async () => pendingWorkspace.resolve({
+      ...recoveredFeed,
+      status: "open",
+      data: [{ ...recoveredFeed.data[0]!, message: "Current workspace incident", resolvedAt: undefined }],
+    }));
+    expect(container.textContent).toContain("Current workspace incident");
+    expect(mocks.list).toHaveBeenCalledTimes(3);
+    expect(mocks.toast).not.toHaveBeenCalled();
+  });
+
+  it("does not start a queued refresh in another workspace", async () => {
+    const pendingOverview = await finishScanWhileFeedLoads();
+    setActiveOrganizationId("org-2");
+    await act(async () => pendingOverview.resolve(emptyFeed));
+    expect(mocks.list).toHaveBeenCalledTimes(2);
+    expect(mocks.toast).not.toHaveBeenCalled();
+  });
 
   it("rechecks an unreachable row, disables repeat clicks and removes the recovered incident", async () => {
     vi.useFakeTimers();
