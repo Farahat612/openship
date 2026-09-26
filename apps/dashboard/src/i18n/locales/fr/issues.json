@@ -49,7 +49,8 @@
     "edge_absent": "Edge non installé",
     "mail_down": "Le moteur de messagerie est arrêté",
     "update_available": "Mise à jour disponible",
-    "component_behind": "Mise à jour de composant disponible"
+    "component_behind": "Mise à jour de composant disponible",
+    "monitoring_offline": "Application de bureau hors ligne"
   },
   "since": "Depuis {when}",
   "resolvedWhen": "Résolu {when}",
@@ -88,10 +89,17 @@
   "toast": {
     "title": "Problèmes",
     "rescanned": "Analyse terminée",
-    "rescanPartial": "Analyse terminée, {n} vérification(s) en échec",
+    "rescanPartial": "Analyse terminée, {n} vérification(s) avec une couverture incomplète",
     "rescanFailed": "Échec de l'analyse",
     "resolved": "Terminé",
     "resolveFailed": "Impossible d'appliquer cette correction",
     "confirmDestructive": "Cette action a un effet de bord irréversible. Continuer ?"
+  },
+  "connectivity": {
+    "offlineTitle": "Cet appareil est hors ligne",
+    "offlineHint": "Les données de surveillance peuvent être obsolètes. Reconnectez-vous pour les actualiser et vérifier les serveurs.",
+    "retryStatus": "Actualiser l’état",
+    "recheck": "Revérifier",
+    "unknownHealth": "L’état des conteneurs reste inconnu tant qu’Openship ne peut pas joindre ce serveur."
   }
 }

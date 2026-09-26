@@ -36,6 +36,7 @@ const { checkPermissionOnResource } = vi.hoisted(() => ({ checkPermissionOnResou
 const { loadOrgContainerIssues } = vi.hoisted(() => ({ loadOrgContainerIssues: vi.fn() }));
 const { listOrganizationUpdates } = vi.hoisted(() => ({ listOrganizationUpdates: vi.fn() }));
 const { getOrgPendingActions } = vi.hoisted(() => ({ getOrgPendingActions: vi.fn() }));
+const disconnected = vi.hoisted(() => vi.fn(() => false));
 
 vi.mock("@repo/db", () => ({
   repos: {
@@ -50,6 +51,7 @@ vi.mock("../../../src/lib/permission", () => ({ checkPermissionOnResource }));
 vi.mock("@repo/platform/engine/modules/system/server-containers.service", () => ({ loadOrgContainerIssues }));
 vi.mock("@repo/platform/engine/modules/updates/updates.service", () => ({ listOrganizationUpdates }));
 vi.mock("@repo/platform/engine/modules/projects/pending-actions.service", () => ({ getOrgPendingActions }));
+vi.mock("@repo/platform/engine/lib/desktop-network", () => ({ desktopNetworkDisconnected: disconnected }));
 
 import { countIssues, listOrganizationIssues } from "@repo/platform/engine/modules/issues/issues.service";
 import type { RequestContext } from "../../../src/lib/request-context";
@@ -111,6 +113,7 @@ const update = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  disconnected.mockReturnValue(false);
   envMock.CLOUD_MODE = false;
   checkPermissionOnResource.mockResolvedValue(true);
   incidentListByOrg.mockResolvedValue([]);
@@ -190,6 +193,23 @@ describe("severity is defined once, across all sources", () => {
 });
 
 describe("one row per cause", () => {
+  it("shows an observation gap for an offline desktop and removes it when connectivity returns", async () => {
+    disconnected.mockReturnValue(true);
+    const offline = await listOrganizationIssues(ctx);
+    expect(offline.issues).toMatchObject([{ kind: "monitoring_offline", scope: "platform", severity: "action_required" }]);
+    expect(offline.counts.outage).toBe(0);
+
+    disconnected.mockReturnValue(false);
+    expect((await listOrganizationIssues(ctx)).issues).toEqual([]);
+    expect(incidentListByOrg).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not invent a recovery in incident history when the desktop reconnects", async () => {
+    disconnected.mockReturnValue(true);
+    const history = await listOrganizationIssues(ctx, { status: "resolved" });
+    expect(history.issues).toEqual([]);
+  });
+
   it("reports an unreachable box once, not once per workload on it", async () => {
     incidentListByOrg.mockResolvedValue([
       incident({
@@ -208,7 +228,7 @@ describe("one row per cause", () => {
     expect(issues[0]).toMatchObject({
       kind: "server_unreachable",
       scope: "server",
-      severity: "outage",
+      severity: "action_required",
       target: { scope: "server", id: "srv-1", name: "web-01", href: "/servers/srv-1" },
     });
   });

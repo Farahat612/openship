@@ -49,7 +49,8 @@
     "edge_absent": "Edge não instalado",
     "mail_down": "O motor de e-mail está parado",
     "update_available": "Atualização disponível",
-    "component_behind": "Atualização de componente disponível"
+    "component_behind": "Atualização de componente disponível",
+    "monitoring_offline": "Aplicação de desktop offline"
   },
   "since": "Desde {when}",
   "resolvedWhen": "Resolvido {when}",
@@ -88,10 +89,17 @@
   "toast": {
     "title": "Problemas",
     "rescanned": "Verificação concluída",
-    "rescanPartial": "Verificação concluída, {n} verificação(ões) falhou(aram)",
+    "rescanPartial": "Análise concluída, {n} verificação(ões) com cobertura incompleta",
     "rescanFailed": "A verificação falhou",
     "resolved": "Pronto",
     "resolveFailed": "Não foi possível aplicar essa correção",
     "confirmDestructive": "Isso tem um efeito colateral que não pode ser desfeito. Continuar?"
+  },
+  "connectivity": {
+    "offlineTitle": "Este dispositivo está offline",
+    "offlineHint": "Os dados de monitorização podem estar desatualizados. Volte a ligar-se para atualizar e verificar os servidores.",
+    "retryStatus": "Consultar estado novamente",
+    "recheck": "Verificar novamente",
+    "unknownHealth": "O estado dos contentores é desconhecido até o Openship conseguir aceder a este servidor."
   }
 }

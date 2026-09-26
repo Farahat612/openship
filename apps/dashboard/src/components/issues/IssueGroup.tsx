@@ -21,6 +21,8 @@ export function IssueGroup({
   busyId,
   onResolve,
   onInfraFix,
+  onRecheck,
+  rechecking,
 }: {
   scope: IssueScope;
   issues: SystemIssue[];
@@ -30,6 +32,8 @@ export function IssueGroup({
   busyId: string | null;
   onResolve: (issue: SystemIssue) => void;
   onInfraFix: (issue: SystemIssue) => void;
+  onRecheck?: () => void;
+  rechecking?: boolean;
 }) {
   const { t } = useI18n();
   const c = t.issues;
@@ -53,6 +57,8 @@ export function IssueGroup({
             busy={busyId === issue.id}
             onResolve={onResolve}
             onInfraFix={onInfraFix}
+            onRecheck={onRecheck}
+            rechecking={rechecking}
           />
         ))}
       </ul>

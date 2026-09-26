@@ -31,6 +31,9 @@ import { InfraFleetCard } from "@/components/infra/InfraFleetCard";
 import type { ContainerApplyActive, ContainerApplyIntent } from "@/lib/api/system";
 import { MonitoringHealth } from "@/components/issues/MonitoringHealth";
 import { MonitoringNavigation, type MonitoringTab } from "@/components/issues/MonitoringNavigation";
+import { useBrowserOnline } from "@/hooks/useBrowserOnline";
+import { monitoringScanIncomplete, useMonitoringScan } from "@/hooks/useMonitoringScan";
+import { getActiveOrganizationId } from "@/lib/api/client";
 
 type SeverityFilter = "all" | IssueSeverity;
 
@@ -52,7 +55,8 @@ const SEVERITY_FILTERS: SeverityFilter[] = ["all", "outage", "action_required", 
 export function IssuesView() {
   const { t } = useI18n();
   const c = t.issues;
-  const { selfHosted } = usePlatform();
+  const { selfHosted, deployMode } = usePlatform();
+  const online = useBrowserOnline();
   const { toast } = useToast();
   const [tab, setTab] = useState<MonitoringTab>("open");
   const showFleet = selfHosted && tab === "open";
@@ -85,12 +89,21 @@ export function IssuesView() {
   const [issues, setIssues] = useState<SystemIssue[]>([]);
   const [counts, setCounts] = useState<IssueCounts | null>(null);
   const [loading, setLoading] = useState(true);
-  const [rescanning, setRescanning] = useState(false);
-  const [scan, setScan] = useState<MonitoringScanSession | null>(null);
+  const [feedError, setFeedError] = useState<string | null>(null);
   const [severity, setSeverity] = useState<SeverityFilter>("all");
   const [query, setQuery] = useState("");
   const [queryDraft, setQueryDraft] = useState("");
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(false);
+  const activeTab = useRef(tab);
+  activeTab.current = tab;
+  const loadVersion = useRef(0);
+  const pendingLoad = useRef<{ key: string; promise: Promise<void>; refresh?: Promise<void> } | null>(null);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   // Container health is a self-hosted capability: the watcher reads Docker
   // daemons owned by this installation. Cloud workloads are observed by the
@@ -101,25 +114,71 @@ export function IssuesView() {
   }, [selfHosted, tab]);
 
   const load = useCallback(
-    async (opts: { silent?: boolean } = {}) => {
+    (opts: { silent?: boolean; fresh?: boolean } = {}): Promise<void> => {
       // The Health tab has its own cached snapshot reader. Open-feed counts
       // continue refreshing in the sidebar; this hidden list needs no polling.
-      if (tab === "health") return;
-      if (!opts.silent) setLoading(true);
-      try {
-        const res = await issuesApi.list(tab === "resolved" ? "resolved" : "open");
-        setIssues(res?.data ?? []);
-        setCounts(res?.counts ?? null);
-      } catch (err) {
-        toast("error", getApiErrorMessage(err, c.loadFailed), c.toast.title);
-      } finally {
-        setLoading(false);
+      const organizationId = getActiveOrganizationId();
+      const inScope = () => mounted.current && activeTab.current === tab &&
+        organizationId === getActiveOrganizationId();
+      if (tab === "health" || !inScope()) return Promise.resolve();
+      const key = `${organizationId}:${tab}`;
+      const pending = pendingLoad.current;
+      if (pending?.key === key) {
+        if (!opts.fresh) return pending.promise;
+        const version = loadVersion.current;
+        // Share one follow-up read and discard it if navigation or newer work
+        // supersedes the request that queued it.
+        pending.refresh ??= pending.promise.then(() => {
+          if (inScope() && version === loadVersion.current) {
+            return load({ ...opts, fresh: false });
+          }
+        });
+        return pending.refresh;
       }
+      const version = ++loadVersion.current;
+      const current = () => inScope() && version === loadVersion.current;
+      const promise = (async () => {
+        if (!opts.silent) setLoading(true);
+        try {
+          const res = await issuesApi.list(tab === "resolved" ? "resolved" : "open");
+          if (!current()) return;
+          setIssues(res?.data ?? []);
+          setCounts(res?.counts ?? null);
+          setFeedError(null);
+        } catch (err) {
+          if (current()) setFeedError(getApiErrorMessage(err, c.loadFailed));
+        } finally {
+          if (current()) setLoading(false);
+        }
+      })();
+      pendingLoad.current = { key, promise };
+      void promise.finally(() => {
+        if (pendingLoad.current?.promise === promise) pendingLoad.current = null;
+      });
+      return promise;
     },
     [tab, c.loadFailed, c.toast.title, toast],
   );
 
-  const { busyId, resolve, infraFix } = useIssueActions(load, presentOperation);
+  const reloadAfterChange = useCallback(() => load({ silent: true, fresh: true }), [load]);
+  const { busyId, resolve, infraFix } = useIssueActions(reloadAfterChange, presentOperation);
+  const monitoringScan = useMonitoringScan({
+    enabled: selfHosted,
+    online,
+    recheckOnReconnect: deployMode === "desktop",
+    onComplete: async (session, notify) => {
+      const organizationId = getActiveOrganizationId();
+      await Promise.all([reloadAfterChange(), infra.reload()]);
+      if (!mounted.current || !notify || organizationId !== getActiveOrganizationId()) return;
+      const incomplete = session.stages.filter(monitoringScanIncomplete).length;
+      toast(
+        incomplete ? "info" : "success",
+        incomplete ? interpolate(c.toast.rescanPartial, { n: String(incomplete) }) : c.toast.rescanned,
+        c.toast.title,
+      );
+    },
+  });
+  const { scan, rescanning } = monitoringScan;
 
   // Updates in the monitoring feed are fleet work, not modal work. The bulk API
   // accepts every eligible target immediately and the fleet hook follows the
@@ -166,23 +225,19 @@ export function IssuesView() {
 
   useEffect(() => {
     void load();
-  }, [load]);
-
-  // Reattach to the instance-wide checker batch after refresh. This polls only a
-  // tiny in-memory status document; it never starts or repeats scanner work.
-  useEffect(() => {
-    if (!selfHosted) return;
-    let cancelled = false;
-    const read = async () => {
-      const result = await issuesApi.rescanStatus().catch(() => null);
-      if (cancelled || !result) return;
-      setScan(result.data);
-      setRescanning(result.data?.status === "running");
-      if (result.data?.status === "running") window.setTimeout(() => void read(), 1200);
+    if (tab === "health" || !online) return;
+    const refresh = () => {
+      if (document.visibilityState !== "hidden") void load({ silent: true });
     };
-    void read();
-    return () => { cancelled = true; };
-  }, [selfHosted]);
+    const timer = window.setInterval(refresh, 15_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [load, tab, online]);
 
   useEffect(() => {
     return () => {
@@ -203,38 +258,6 @@ export function IssuesView() {
     setQueryDraft("");
     setQuery("");
     setSeverity("all");
-  };
-
-  const handleRescan = async () => {
-    if (rescanning) return;
-    setRescanning(true);
-    try {
-      const res = await issuesApi.rescan();
-      setScan(res.data);
-      // The POST only accepts the batch. This status loop owns completion;
-      // closing/navigating away cannot cancel the server-side jobs.
-      const watch = async () => {
-        const status = await issuesApi.rescanStatus().catch(() => null);
-        if (!status?.data) return;
-        setScan(status.data);
-        if (status.data.status === "running") {
-          window.setTimeout(() => void watch(), 1200);
-          return;
-        }
-        const failed = status.data.stages.filter((stage) => stage.status === "failed").length;
-        toast(
-          failed ? "error" : "success",
-          failed ? interpolate(c.toast.rescanPartial, { n: String(failed) }) : c.toast.rescanned,
-          c.toast.title,
-        );
-        await load({ silent: true });
-        setRescanning(false);
-      };
-      void watch();
-    } catch (err) {
-      toast("error", getApiErrorMessage(err, c.toast.rescanFailed), c.toast.title);
-      setRescanning(false);
-    }
   };
 
   const q = query.trim().toLowerCase();
@@ -269,8 +292,8 @@ export function IssuesView() {
         {showFleet && (
           <button
             type="button"
-            onClick={handleRescan}
-            disabled={rescanning}
+            onClick={monitoringScan.rescan}
+            disabled={rescanning || !monitoringScan.canRescan}
             className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-border/60 bg-card px-4 py-2.5 text-[13px] font-medium text-foreground transition-colors hover:bg-muted/50 disabled:opacity-60"
           >
             {rescanning ? (
@@ -284,6 +307,21 @@ export function IssuesView() {
       </div>
 
       <MonitoringNavigation value={tab} onChange={setTab} selfHosted={selfHosted} />
+
+      {!online && (
+        <div role="status" className="mb-5 rounded-xl bg-warning-bg px-4 py-3 text-sm text-warning">
+          <p className="font-medium">{c.connectivity.offlineTitle}</p>
+          <p className="mt-1">{c.connectivity.offlineHint}</p>
+        </div>
+      )}
+      {online && (monitoringScan.error || feedError) && (
+        <div role="alert" className="mb-5 flex items-center justify-between gap-3 rounded-xl bg-warning-bg px-4 py-3 text-sm text-warning">
+          <p>{monitoringScan.error || feedError}</p>
+          <button type="button" onClick={monitoringScan.error ? monitoringScan.refresh : reloadAfterChange} className="shrink-0 rounded-lg bg-warning/10 px-3 py-2 font-medium">
+            {c.connectivity.retryStatus}
+          </button>
+        </div>
+      )}
 
       {operation && (
         <section
@@ -360,7 +398,7 @@ export function IssuesView() {
             </div>
           </div>
         </div>
-      ) : issues.length === 0 && (!showFleet || infra.empty) ? (
+      ) : feedError && issues.length === 0 ? null : issues.length === 0 && (!showFleet || infra.empty) ? (
         // Nothing at all for this tab: the empty state stands alone, full width and
         // centred, with no filters or summary rail to frame an absence.
         <EmptyIssues filtered={false} resolved={tab === "resolved"} />
@@ -414,6 +452,8 @@ export function IssuesView() {
                 busyId={busyId}
                 onResolve={resolve}
                 onInfraFix={infraFix}
+                onRecheck={monitoringScan.canRescan ? monitoringScan.recheckHealth : undefined}
+                rechecking={rescanning}
               />
             )}
 
@@ -471,6 +511,7 @@ const SCAN_LABELS: Record<MonitoringScanSession["stages"][number]["key"], string
 
 function ScanProgress({ session }: { session: MonitoringScanSession }) {
   const actionable = session.stages.filter((stage) => stage.status !== "skipped");
+  const incomplete = actionable.some(monitoringScanIncomplete);
   const finished = actionable.filter((stage) => stage.status === "completed" || stage.status === "failed").length;
   const percent = actionable.length ? Math.round((finished / actionable.length) * 100) : 100;
   const radius = 25;
@@ -482,14 +523,14 @@ function ScanProgress({ session }: { session: MonitoringScanSession }) {
         <div className="relative size-16 shrink-0">
           <svg viewBox="0 0 64 64" className="size-16 -rotate-90" aria-label={`${percent}% scanned`}>
             <circle cx="32" cy="32" r={radius} fill="none" stroke="var(--color-muted)" strokeWidth="6" />
-            <circle cx="32" cy="32" r={radius} fill="none" stroke={session.status === "completed" ? "var(--color-success-solid)" : "var(--color-primary)"} strokeWidth="6" strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - percent / 100)} className="transition-[stroke-dashoffset] duration-500" />
+            <circle cx="32" cy="32" r={radius} fill="none" stroke={session.status !== "completed" ? "var(--color-primary)" : incomplete ? "var(--color-warning-solid)" : "var(--color-success-solid)"} strokeWidth="6" strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - percent / 100)} className="transition-[stroke-dashoffset] duration-500" />
           </svg>
           <span className="absolute inset-0 flex items-center justify-center text-xs font-semibold tabular-nums">{percent}%</span>
         </div>
         <div className="min-w-0 flex-1">
           <div className="mb-2 flex items-center justify-between gap-3"><div><p className="text-sm font-semibold text-foreground">{session.status === "running" ? "Scanning monitoring sources" : "Latest monitoring scan"}</p><p className="text-xs text-muted-foreground">{finished} of {actionable.length} checkers finished · runs concurrently</p></div></div>
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            {session.stages.map((stage) => <div key={stage.key} className="rounded-lg bg-muted/25 px-3 py-2"><div className="flex items-center gap-2"><span className={`size-2 rounded-full ${stage.status === "running" ? "animate-pulse bg-primary" : stage.status === "completed" ? "bg-success-solid" : stage.status === "failed" ? "bg-danger-solid" : "bg-muted-foreground/40"}`} /><span className="truncate text-xs font-medium text-foreground">{SCAN_LABELS[stage.key]}</span></div><p className="mt-1 truncate text-[11px] text-muted-foreground">{scanStageDetail(stage)}</p></div>)}
+            {session.stages.map((stage) => <div key={stage.key} className="rounded-lg bg-muted/25 px-3 py-2"><div className="flex items-center gap-2"><span className={`size-2 rounded-full ${stage.status === "running" ? "animate-pulse bg-primary" : monitoringScanIncomplete(stage) ? "bg-warning-solid" : stage.status === "completed" ? "bg-success-solid" : "bg-muted-foreground/40"}`} /><span className="truncate text-xs font-medium text-foreground">{SCAN_LABELS[stage.key]}</span></div><p className="mt-1 text-xs text-muted-foreground">{scanStageDetail(stage)}</p></div>)}
           </div>
         </div>
       </div>
@@ -500,9 +541,12 @@ function ScanProgress({ session }: { session: MonitoringScanSession }) {
 function scanStageDetail(stage: MonitoringScanSession["stages"][number]): string {
   if (stage.status === "pending") return "Waiting";
   if (stage.status === "running") return "Checking…";
-  if (stage.status === "skipped") return "Not available here";
+  if (stage.status === "skipped") return "Not included in this scan";
   if (stage.status === "failed") return stage.error ?? "Failed";
-  const values = Object.entries(stage.summary ?? {}).filter(([, value]) => typeof value === "number");
+  if (Number(stage.summary?.offline) > 0) return "This desktop is offline; remote health is unknown";
+  if (Number(stage.summary?.unreachable) > 0) return `${stage.summary!.unreachable} server(s) not reached; health is unknown`;
+  if (monitoringScanIncomplete(stage)) return "Some targets could not be checked";
+  const values = Object.entries(stage.summary ?? {}).filter(([, value]) => typeof value === "number" && value > 0);
   if (!values.length) return "Completed";
   return values.slice(0, 2).map(([key, value]) => `${value} ${key}`).join(" · ");
 }

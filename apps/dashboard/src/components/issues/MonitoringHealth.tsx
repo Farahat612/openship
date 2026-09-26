@@ -86,11 +86,13 @@ export function MonitoringHealth() {
     refresh();
     const timer = setInterval(refresh, 15_000);
     window.addEventListener("focus", refresh);
+    window.addEventListener("online", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => {
       mounted.current = false;
       clearInterval(timer);
       window.removeEventListener("focus", refresh);
+      window.removeEventListener("online", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
   }, [load]);
@@ -395,13 +397,14 @@ function HealthEmptyState({
 }
 
 function hasPartialCoverage(scan: CurrentHealthScanResult): boolean {
-  const { unreachable, unresolved, skipped, errors, indeterminate } = scan.summary;
-  return unreachable + unresolved + skipped + errors + indeterminate > 0;
+  const { unreachable, unresolved, skipped, errors, indeterminate, offline = 0 } = scan.summary;
+  return unreachable + unresolved + skipped + errors + indeterminate + offline > 0;
 }
 
 function coverageText(scan: CurrentHealthScanResult): string {
   const parts: string[] = [];
-  const { unreachable, unresolved, skipped, errors, indeterminate } = scan.summary;
+  const { unreachable, unresolved, skipped, errors, indeterminate, offline = 0 } = scan.summary;
+  if (offline) parts.push("This desktop is offline; remote server health is unknown");
   if (unreachable) parts.push(`${unreachable} ${unreachable === 1 ? "host was" : "hosts were"} unreachable`);
   if (unresolved) parts.push(`${unresolved} ${unresolved === 1 ? "project has" : "projects have"} an unresolved target`);
   if (indeterminate) parts.push(`${indeterminate} ${indeterminate === 1 ? "workload is" : "workloads are"} unknown`);

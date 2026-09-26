@@ -36,12 +36,16 @@ export function IssueRow({
   busy,
   onResolve,
   onInfraFix,
+  onRecheck,
+  rechecking,
 }: {
   issue: SystemIssue;
   density?: AlertDensity;
   busy: boolean;
   onResolve: (issue: SystemIssue) => void;
   onInfraFix: (issue: SystemIssue) => void;
+  onRecheck?: () => void;
+  rechecking?: boolean;
 }) {
   const { t } = useI18n();
   const c = t.issues;
@@ -107,6 +111,11 @@ export function IssueRow({
             command={SELF_UPDATE_COMMAND}
             className={cn("shrink-0", !compact && "h-8 max-w-full")}
           />
+        ) : issue.kind === "server_unreachable" && !issue.resolvedAt && onRecheck ? (
+          <button type="button" onClick={onRecheck} disabled={rechecking} title={c.rescan} className={cn(actionClass, "disabled:opacity-60")}>
+            <UiIcon name={rechecking ? "spinner" : "refresh"} className={cn("size-3", rechecking && "animate-spin")} />
+            {rechecking ? c.rescanning : c.connectivity.recheck}
+          </button>
         ) : issue.infraFix ? (
           <button type="button" onClick={() => onInfraFix(issue)} className={actionClass}>
             {issue.infraFix.action === "update" ? (
@@ -158,6 +167,9 @@ export function IssueRow({
         </p>
       )}
       {meta && <p className={cn("truncate", metaClass)}>{meta}</p>}
+      {issue.kind === "server_unreachable" && !issue.resolvedAt && (
+        <p className={metaClass}>{c.connectivity.unknownHealth}</p>
+      )}
       {selfUpdate && <p className={metaClass}>{c.selfUpdateNote}</p>}
     </AlertRow>
   );

@@ -2403,7 +2403,7 @@
     "issues.rescan": {
       "page": "issues",
       "section": "Operations",
-      "description": "Run applicable issue checkers immediately.",
+      "description": "Run applicable issue checkers, or only container/server health.",
       "route": "POST /api/issues/rescan"
     },
     "issues.rescanStatus": {

@@ -49,7 +49,8 @@
     "edge_absent": "Edge no instalado",
     "mail_down": "El motor de correo está detenido",
     "update_available": "Actualización disponible",
-    "component_behind": "Actualización de componente disponible"
+    "component_behind": "Actualización de componente disponible",
+    "monitoring_offline": "Escritorio sin conexión"
   },
   "since": "Desde {when}",
   "resolvedWhen": "Resuelto {when}",
@@ -88,10 +89,17 @@
   "toast": {
     "title": "Problemas",
     "rescanned": "Análisis finalizado",
-    "rescanPartial": "Análisis finalizado, {n} comprobación(es) fallida(s)",
+    "rescanPartial": "Análisis finalizado, {n} comprobación(es) con cobertura incompleta",
     "rescanFailed": "El análisis falló",
     "resolved": "Listo",
     "resolveFailed": "No se pudo aplicar esa corrección",
     "confirmDestructive": "Esto tiene un efecto secundario que no se puede deshacer. ¿Continuar?"
+  },
+  "connectivity": {
+    "offlineTitle": "Este dispositivo está sin conexión",
+    "offlineHint": "La información de supervisión puede estar desactualizada. Vuelve a conectarte para actualizarla y comprobar los servidores.",
+    "retryStatus": "Reintentar estado",
+    "recheck": "Comprobar de nuevo",
+    "unknownHealth": "El estado de los contenedores es desconocido hasta que Openship pueda acceder a este servidor."
   }
 }

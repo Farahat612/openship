@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { HTTPException } from "hono/http-exception";
 import { ZodError } from "zod";
 import { AppError } from "@repo/core";
 import { OperationError } from "@repo/contracts";
@@ -11,7 +12,8 @@ import { redactSensitiveRequestPath } from "../lib/request-log-redaction";
  * 1. ZodError → 400 with field-level details
  * 2. AppError subclass → statusCode + message + code
  * 3. SyntaxError → 400 (malformed JSON request body)
- * 4. Unknown → 500
+ * 4. Explicit HTTP client errors → their original 4xx response
+ * 5. Unknown → 500
  *
  * Registered via `app.onError(handleApiError)`. Hono's compose() wraps
  * each dispatch level in try/catch and routes thrown errors to
@@ -83,6 +85,13 @@ export function handleApiError(err: unknown, c: Context) {
   // a client input error as a server fault. Map it to 400 centrally.
   if (err instanceof SyntaxError) {
     return c.json({ error: "Invalid JSON body", code: "INVALID_JSON" }, 400);
+  }
+
+  // Hono's JSON validator wraps malformed bodies in HTTPException rather than
+  // SyntaxError. Preserve explicit client responses (including their headers)
+  // instead of turning validation failures into misleading server errors.
+  if (err instanceof HTTPException && err.status >= 400 && err.status < 500) {
+    return err.getResponse();
   }
 
   // Log the route with it. `[UNHANDLED ERROR] Error: doveadm pw returned …` on its own

@@ -13,6 +13,7 @@
 import { Hono } from "hono";
 import { secureRouter } from "../../lib/secure-router";
 import * as ctrl from "./issues.controller";
+import { IssueJobSchemas } from "@repo/contracts";
 
 const r = secureRouter(new Hono(), {
   module: "issues",
@@ -81,12 +82,14 @@ r.post(
   "/rescan",
   {
     tag: "job:write",
+    body: IssueJobSchemas.rescan.input,
+    bodyValidatedByOperation: true,
     auditHandledByOperation: true,
     collection: true,
     localOnly: true,
     mcp: {
       description:
-        "Run the checkers behind GET /issues immediately (health watch, managed-container scan, pending domain verification, update scan) instead of waiting for their schedules, then re-read GET /issues. Returns which jobs ran, which were skipped as not applicable to this platform, and which failed. Adds no new probing — these are the same scheduled jobs, recorded in the jobs history as manual runs. Self-hosted only.",
+        "Run the checkers behind GET /issues immediately instead of waiting for their schedules, then re-read GET /issues. Send {healthOnly:true} to recheck container/server health without running component updates or domain reconciliation. Returns a scan session with stages; GET /issues/rescan/status follows its completion. These are the existing scheduled jobs, recorded in job history as manual runs. Self-hosted only and requires an instance administrator.",
     },
   },
   ctrl.rescanIssues,
