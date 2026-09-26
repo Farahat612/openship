@@ -24,7 +24,7 @@ export const TrafficChart: React.FC<Props> = ({
 }) => {
   const { t, locale } = useI18n();
   const labels = t.projectDetail.general.traffic;
-  const [chartType, setChartType] = useState<"bar" | "area">("bar");
+  const [chartType, setChartType] = useState<"bar" | "area">("area");
   const gradientId = useId();
   const data = useMemo(() => buildTrafficSeries(trafficData), [trafficData]);
   const timeFormat = useMemo(() => new Intl.DateTimeFormat(locale, {
