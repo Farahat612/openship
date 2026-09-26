@@ -33,7 +33,7 @@ export default function HomeTipCard({ projectCount, loading }: HomeTipCardProps)
   const contextual: HomeTip | null = !gitHub.connected
     ? { text: c.connectText, href: "/settings", label: c.connectLabel }
     : !busy && projectCount === 0
-      ? { text: c.createText, href: "/new", label: c.createLabel }
+      ? { text: c.createText, href: "/library", label: c.createLabel }
       : null;
 
   // Otherwise rotate through the product tips — a fresh one per mount (per
