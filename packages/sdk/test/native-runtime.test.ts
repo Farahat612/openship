@@ -450,7 +450,7 @@ describe("owned native platform on Node", () => {
       expect(await first!.scope.system.getSettings()).toMatchObject({ configured: false, productModeEffective: "platform" });
       await expect(first!.scope.system.updateSettings({ productMode: "mail" })).rejects.toMatchObject({ code: "FORBIDDEN" });
       await expect(first!.scope.system.health()).rejects.toMatchObject({ code: "FORBIDDEN" });
-      await expect(first!.scope.system.browse()).rejects.toMatchObject({ code: "SOURCE_PATH_NOT_ALLOWED" });
+      await expect(first!.scope.system.browse()).rejects.toMatchObject({ code: "FORBIDDEN" });
       const projects = await Promise.all(instances.map(s => s.scope.projects.create({ name: "same-name", gitProvider: "upload" })));
       expect(projects[0]!.organizationId).not.toBe(projects[1]!.organizationId);
       await expect(first!.scope.projects.get(projects[1]!.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
@@ -611,6 +611,7 @@ describe("owned native platform on Node", () => {
       first!.identities.set("administrator", { user: administrator.user, sessionId: "admin-session" });
       await first!.ship.operator!.setMembership({ organizationId: first!.customer.organizationId, userId: administrator.user.id, role: "admin" });
       const adminScope = await first!.ship.scope({ identity: "administrator", organizationId: first!.customer.organizationId });
+      await expect(adminScope.system.browse()).rejects.toMatchObject({ code: "SOURCE_PATH_NOT_ALLOWED" });
       await expect(adminScope.projects.clearBuildCache(projectId)).rejects.toMatchObject({ code: "HOST_EXECUTION_DISABLED" });
       expect(await adminScope.system.health()).toMatchObject({ db: { driver: "pglite", ok: true }, hostChannel: { ok: false, state: "disabled" } });
       await expect(adminScope.system.listUntrackedEdgeSites()).rejects.toMatchObject({ code: "HOST_EXECUTION_DISABLED" });
@@ -659,17 +660,25 @@ describe("owned native platform on Node", () => {
     await writeFile(join(source, "index.html"), "<h1>Local import</h1>");
     await writeFile(join(directory, "outside.txt"), "private-host-content");
     let identity: VerifiedIdentity | null = null;
+    let administratorIdentity: VerifiedIdentity | null = null;
     const ship = await createShip({ instanceId: "local-import", stateDirectory: directory,
       storage: { driver: "pglite", dataDir: "memory://" }, encryptionKey: key, runtime: "bare", routing: "none",
-      policy: { sourceRoots: [source] }, administration: true, identity: { resolve: async () => identity },
+      policy: { sourceRoots: [source] }, administration: true,
+      identity: { resolve: async (assertion: string) => assertion === "administrator" ? administratorIdentity : identity },
     });
     try {
       const mapped = await ship.operator!.ensureIdentity({ issuer: "host", subject: "local-owner", email: "local@example.test" });
       identity = { user: mapped.user, sessionId: "local-session" };
+      const administrator = await ship.operator!.ensureIdentity({ issuer: "host", subject: "administrator", email: "admin@example.test", instanceAdmin: true });
+      administratorIdentity = { user: administrator.user, sessionId: "admin-session" };
       await ship.start();
       const { projects, system, deployments, tokens, sources } = await ship.scope({ identity: "verified", organizationId: mapped.personalOrganizationId });
-      expect(await system.browse()).toEqual({ path: await realpath(source), directories: [] });
-      await expect(system.browse({ path: directory })).rejects.toMatchObject({ code: "SOURCE_PATH_NOT_ALLOWED" });
+      const { system: administratorSystem } = await ship.scope({ identity: "administrator", organizationId: administrator.personalOrganizationId });
+      // Directory browsing is instance-owned. Importing an explicitly allowed
+      // source still uses the ordinary project's permissions below.
+      await expect(system.browse()).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(await administratorSystem.browse()).toEqual({ path: await realpath(source), directories: [] });
+      await expect(administratorSystem.browse({ path: directory })).rejects.toMatchObject({ code: "SOURCE_PATH_NOT_ALLOWED" });
       expect(await deployments.prepare({ source: "local", path: source })).toMatchObject({ stack: "static", repository: { name: "source" } });
       await expect(deployments.prepare({ source: "local", path: directory })).rejects.toMatchObject({ code: "SOURCE_PATH_NOT_ALLOWED" });
       expect(await projects.scanLocal({ path: source })).toMatchObject({ success: true, path: source, stack: "static" });
@@ -726,7 +735,7 @@ describe("owned native platform on Node", () => {
         services: [{ name: "db", environment: { POSTGRES_PASSWORD: "uploaded-password" }, buildArgs: { TOKEN: "staged-build-secret" } }],
       });
       await symlink(join(directory, "outside.txt"), join(source, "escape.txt"));
-      await expect(system.browse({ path: join(source, "escape.txt") })).rejects.toMatchObject({ code: "SOURCE_PATH_NOT_ALLOWED" });
+      await expect(administratorSystem.browse({ path: join(source, "escape.txt") })).rejects.toMatchObject({ code: "SOURCE_PATH_NOT_ALLOWED" });
       await expect(projects.scanLocal({ path: source })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
       expect((await projects.list()).total).toBe(1);
     } finally {

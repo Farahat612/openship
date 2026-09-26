@@ -17,6 +17,7 @@
  */
 
 import { buildMailImageRef, safeErrorMessage, mailHostname } from "@repo/core";
+import { DEFAULT_CONTAINER_LOG_ARGS } from "../../container-logging";
 import type { CommandExecutor, LogEntry } from "../../types";
 import type { SystemLog, SystemLogCallback } from "../types";
 import { sq } from "../local-shell";
@@ -498,6 +499,7 @@ export function buildDbRunCommand(container: string, dbPort: number = resolveMai
     "docker run -d",
     `--name ${sq(container)}`,
     "--restart unless-stopped",
+    ...DEFAULT_CONTAINER_LOG_ARGS,
     `--env-file ${sq(DB_ENV_FILE)}`,
     `-e ${sq(`PGDATA=${MAIL_DB_PGDATA}`)}`,
     `-p ${sq(`${MAIL_DB_HOST_BIND}:${dbPort}:${MAIL_DB_INTERNAL_PORT}`)}`,
@@ -520,6 +522,7 @@ export function buildMailRunCommand(container: string, image: string, hostname?:
     "--network host",
     hostname ? `--hostname ${sq(hostname)}` : "",
     "--restart unless-stopped",
+    ...DEFAULT_CONTAINER_LOG_ARGS,
     "--cap-add NET_ADMIN",
     `--env-file ${sq(ENGINE_ENV_FILE)}`,
     mounts,

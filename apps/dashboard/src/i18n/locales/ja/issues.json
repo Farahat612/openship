@@ -49,7 +49,8 @@
     "edge_absent": "エッジが未インストール",
     "mail_down": "メールエンジンが停止しています",
     "update_available": "更新があります",
-    "component_behind": "コンポーネントの更新があります"
+    "component_behind": "コンポーネントの更新があります",
+    "monitoring_offline": "デスクトップがオフライン"
   },
   "since": "{when}に開始",
   "resolvedWhen": "{when}に解決",
@@ -88,10 +89,17 @@
   "toast": {
     "title": "問題",
     "rescanned": "再スキャンが完了しました",
-    "rescanPartial": "再スキャンが完了しました（{n}件のチェックが失敗）",
+    "rescanPartial": "再スキャン完了。{n}件のチェックは確認範囲が不完全です",
     "rescanFailed": "再スキャンに失敗しました",
     "resolved": "完了",
     "resolveFailed": "この修復を適用できませんでした",
     "confirmDestructive": "この操作には取り消せない副作用があります。続行しますか？"
+  },
+  "connectivity": {
+    "offlineTitle": "このデバイスはオフラインです",
+    "offlineHint": "監視情報が古くなっている可能性があります。再接続して情報を更新し、サーバーを再確認してください。",
+    "retryStatus": "状態を再取得",
+    "recheck": "再確認",
+    "unknownHealth": "Openshipがこのサーバーに接続するまで、コンテナの状態は不明です。"
   }
 }

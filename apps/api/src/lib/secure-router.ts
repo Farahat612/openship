@@ -186,7 +186,8 @@ export function secureRouter<T extends Hono>(
     // is never duplicated between a manual `tbValidator(...)` handler and the MCP
     // block. Runs before any cloud proxy (validating locally before forwarding is
     // safe: Hono caches the parsed body, so the proxy still re-reads it).
-    if (!isPublicSpec(mergedSpec) && (mergedSpec as PermissionSpec).body) {
+    if (!isPublicSpec(mergedSpec) && (mergedSpec as PermissionSpec).body &&
+        !(mergedSpec as PermissionSpec).bodyValidatedByOperation) {
       chain.push(tbValidator("json", (mergedSpec as PermissionSpec).body!));
     }
     chain.push(...handlers);

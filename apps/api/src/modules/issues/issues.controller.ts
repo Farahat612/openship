@@ -2,6 +2,7 @@
 import type { Context } from "hono";
 import { getPlatformKernel } from "@repo/platform/engine/lib/platform";
 import { operationContext, operationData } from "../../lib/operation-context";
+import { ValidationError } from "@repo/core";
 const issues = () => getPlatformKernel().issues;
 export async function listIssues(c: Context) {
   const result = await operationData(c, issues().list(operationContext(c), { status: c.req.query("status") === "resolved" ? "resolved" : "open" }));
@@ -21,5 +22,9 @@ export async function rescanStatus(c: Context) {
   return c.json({ data: await operationData(c, issues().rescanStatus(operationContext(c))) });
 }
 export async function rescanIssues(c: Context) {
-  return c.json({ data: await operationData(c, issues().rescan(operationContext(c))) }, 202);
+  const text = await c.req.text();
+  let input;
+  try { input = text.trim() ? JSON.parse(text) : undefined; }
+  catch { throw new ValidationError("Invalid JSON body"); }
+  return c.json({ data: await operationData(c, issues().rescan(operationContext(c), input)) }, 202);
 }

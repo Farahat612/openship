@@ -54,13 +54,24 @@ curl "$OPENSHIP_URL/api/issues/health" \
 
 The health snapshot includes workload observations, scan timing, and watcher capabilities. It does not
 start a continuous watcher. `scanHealth()` requests a fresh one-time check where the host supports it;
-native scheduling remains disabled unless explicitly configured.
+it refreshes snapshots without opening or resolving incidents. Native scheduling remains disabled
+unless explicitly configured.
 
 ## Refresh issue sources
 
-`rescan()` starts the broader rescan pipeline and requires job-write access. `rescanStatus()` reads the
-latest scan's stage statuses, summaries, and failures. Check the returned state before treating a scan
-as complete.
+`rescan()` starts the broader rescan pipeline on self-hosted instances and requires an instance
+administrator with job-write access. `rescanStatus()` reads the latest scan's stage statuses, summaries,
+and failures. A completed stage can still report gaps such as unreachable servers or an offline desktop.
+
+Use `rescan({ healthOnly: true })` to run the existing container/server health watcher and reconcile
+incidents without component updates or domain reconciliation. The REST equivalent accepts
+`{"healthOnly":true}` in the body of `POST /api/issues/rescan`. Omitting the input keeps the full rescan
+behavior. If a scan is already running, the request returns that existing session; follow its progress
+with `rescanStatus()`.
+
+A disconnected desktop cannot establish remote server health. The Monitoring page requests a fresh
+health check on desktop reconnection, and an unreachable-server incident resolves only after the
+daemon answers successfully.
 
 ## Operations
 
@@ -72,7 +83,7 @@ as complete.
 | Read issue counts by severity. | `issues.summary()` | `GET /api/issues/summary`<br />`project:list` |
 | Read cached workload health snapshots. | `issues.health()` | `GET /api/issues/health`<br />`project:list` · Self-hosted |
 | Refresh current workload health without enabling the scheduler. | `issues.scanHealth()` | `POST /api/issues/health/scan`<br />`project:list` · Self-hosted |
-| Run applicable issue checkers immediately. | `issues.rescan()` | `POST /api/issues/rescan`<br />`job:write` · Self-hosted |
+| Run applicable issue checkers, or only container/server health. | `issues.rescan(input?)` | `POST /api/issues/rescan`<br />`job:write` · Self-hosted |
 | Read the status of an issue rescan. | `issues.rescanStatus()` | `GET /api/issues/rescan/status`<br />`job:read` · Self-hosted |
 
 {/* api-operations:end */}

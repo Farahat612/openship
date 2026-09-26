@@ -59,11 +59,18 @@
 
 name: openship
 
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "20m"
+    max-file: "3"
+
 services:
   # ─── Database (storage, private) ──────────────────────
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       # Fresh installs keep the data dir in a SUBDIR of the volume so initdb never
       # runs against a bare mount root (fails on quirky host filesystems with
@@ -91,6 +98,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    logging: *default-logging
     command: ["redis-server", "--appendonly", "yes"]
     # PRIVATE: not published to the host. api reaches it at redis:6379.
     expose:
@@ -107,6 +115,7 @@ services:
   api:
     image: ${OPENSHIP_IMAGE_REGISTRY:-ghcr.io/oblien}/openship-api:${OPENSHIP_VERSION:-latest}
     restart: unless-stopped
+    logging: *default-logging
     ports:
       # Loopback by default — the host-net edge reaches it over loopback.
       # OPENSHIP_BIND_ADDR opts into a public/LAN interface (see header note).
@@ -191,6 +200,7 @@ services:
   dashboard:
     image: ${OPENSHIP_IMAGE_REGISTRY:-ghcr.io/oblien}/openship-dashboard:${OPENSHIP_VERSION:-latest}
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "${OPENSHIP_BIND_ADDR:-127.0.0.1}:${DASHBOARD_PORT:-3001}:${DASHBOARD_PORT:-3001}"
     env_file:
@@ -219,6 +229,7 @@ services:
     # Safe here: the edge is a singleton (host networking, one per box).
     container_name: openship-edge
     restart: unless-stopped
+    logging: *default-logging
     network_mode: host
     volumes:
       - /var/lib/openship/edge/sites-enabled:/usr/local/openresty/nginx/conf/sites-enabled:z

@@ -22,7 +22,7 @@ export const IssueCollectionSchemas = {
 } as const satisfies Record<string, ResourceOperationSchema>;
 export const IssueRescanSchema = Type.Object({ id: Type.String(), status: Type.Union([Type.Literal("running"), Type.Literal("completed")]), startedAt: Type.String(), finishedAt: Type.Optional(Type.String()), stages: Type.Array(Type.Object({ key: Type.String(), status: Type.Union((["pending", "running", "completed", "failed", "skipped"] as const).map(value => Type.Literal(value))), summary: Type.Optional(Type.Record(Type.String(), Type.Unknown())), error: Type.Optional(Type.String()) })) });
 export const IssueJobSchemas = {
-  rescan: { action: "write", output: IssueRescanSchema },
+  rescan: { action: "write", input: Type.Object({ healthOnly: Type.Optional(Type.Boolean()) }), optionalInput: true, output: IssueRescanSchema },
   rescanStatus: { action: "read", output: Type.Union([IssueRescanSchema, Type.Null()]) },
 } as const satisfies Record<string, ResourceOperationSchema>;
 export type SystemIssue = Static<typeof SystemIssueSchema>;

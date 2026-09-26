@@ -100,6 +100,8 @@ const h = vi.hoisted(() => {
     renew: vi.fn(async (_groupKeys: readonly string[]) => {}),
     stopEvents: vi.fn(async () => {}),
     watcherEnabled: true,
+    disconnected: false,
+    disconnectOnList: false,
     logLines: ["panic: dial tcp 127.0.0.1:5432: connect: connection refused"],
   };
 });
@@ -264,6 +266,9 @@ vi.mock("@repo/adapters", async (importOriginal) => ({
 }));
 
 vi.mock("@repo/platform/engine/lib/notification-dispatcher", () => ({ notification: { emit: h.emit } }));
+vi.mock("@repo/platform/engine/lib/desktop-network", () => ({
+  desktopNetworkDisconnected: () => h.platformTarget === "desktop" && h.disconnected,
+}));
 
 vi.mock("@repo/platform/engine/lib/public-url", () => ({
   resolveDashboardPublicUrl: () => "https://ops.example.com",
@@ -329,6 +334,7 @@ function fakeRuntime(box: string | null = null) {
     supports: (cap: string) =>
       cap === "hostContainerQuery" || (cap === "stabilityProbe" && !h.noProbe),
     listAllContainers: async () => {
+      if (h.disconnectOnList) h.disconnected = true;
       if (h.listThrows) throw new Error(h.listThrows);
       // Accepted and never answered. A rejection is the polite failure; this is the
       // one the deadline exists for.
@@ -613,6 +619,8 @@ beforeEach(() => {
   h.renew.mockClear();
   h.stopEvents.mockClear();
   h.watcherEnabled = true;
+  h.disconnected = false;
+  h.disconnectOnList = false;
 });
 
 describe("automatic monitoring coverage and lifecycle", () => {
@@ -1321,6 +1329,66 @@ describe("intentional stop", () => {
 // ─── Gate 3: an unreachable box ──────────────────────────────────────────────
 
 describe("unreachable server", () => {
+  it("keeps remote health unknown while the desktop is offline without opening server incidents", async () => {
+    h.platformTarget = "desktop";
+    const first = seedApp({ serverId: "remote-a" });
+    seedApp({ serverId: "remote-b" });
+    h.disconnected = true;
+
+    const summary = await tick();
+    expect(summary).toMatchObject({ offline: 2, unreachable: 0, opened: 0, indeterminate: 2 });
+    expect(h.disposed).not.toHaveBeenCalled();
+    expect(h.emit).not.toHaveBeenCalled();
+    expect(h.renew).not.toHaveBeenCalled();
+    const { listWorkloadHealthSnapshots } = await import("@repo/platform/engine/modules/monitoring/health-watch");
+    expect(listWorkloadHealthSnapshots("org1").find(row => row.projectId === first.projectId)?.state).toBe("unknown");
+
+    h.disconnected = false;
+    const recovered = await tick();
+    expect(recovered).toMatchObject({ offline: 0, unreachable: 0, opened: 0 });
+    expect(listWorkloadHealthSnapshots("org1").find(row => row.projectId === first.projectId)?.state).toBe("healthy");
+    expect(h.emit).not.toHaveBeenCalled();
+  });
+
+  it("does not blame the server when the desktop disconnects during the SSH request", async () => {
+    h.platformTarget = "desktop";
+    seedApp({ serverId: "remote-mid-request" });
+    h.disconnectOnList = true;
+    h.listThrows = "Timed out while waiting for handshake";
+
+    expect(await tick()).toMatchObject({ offline: 1, unreachable: 0, opened: 0 });
+    expect(h.disposed).toHaveBeenCalledOnce();
+    expect(h.emit).not.toHaveBeenCalled();
+  });
+
+  it("preserves an existing server incident offline and resolves it only after Docker answers", async () => {
+    h.platformTarget = "desktop";
+    seedApp({ serverId: "remote-recovery" });
+    h.listThrows = "Timed out while waiting for handshake";
+    expect(await tick()).toMatchObject({ unreachable: 1, opened: 1 });
+
+    h.disconnected = true;
+    expect(await tick()).toMatchObject({ offline: 1, resolved: 0 });
+    expect(emitted("server.reachable")).toHaveLength(0);
+
+    h.disconnected = false;
+    // A network interface returning is not proof that the SSH server recovered.
+    expect(await tick()).toMatchObject({ unreachable: 1, resolved: 0 });
+    h.listThrows = null;
+    expect(await tick()).toMatchObject({ unreachable: 0, resolved: 1 });
+    await tick();
+    expect(emitted("server.reachable")).toHaveLength(1);
+  });
+
+  it("reports offline coverage in the current-state scan without incident side effects", async () => {
+    h.platformTarget = "desktop";
+    seedApp({ serverId: "offline-current" });
+    h.disconnected = true;
+    expect((await checkCurrent()).summary).toMatchObject({ offline: 1, indeterminate: 1, unreachable: 0 });
+    expect(h.incidents).toHaveLength(0);
+    expect(h.disposed).not.toHaveBeenCalled();
+  });
+
   it("sends one alert for the box, not one per project, and resolves nothing", async () => {
     const seeds = Array.from({ length: 5 }, () => seedApp({ serverId: "srv9" }));
     // One of them was already down before the box went away.

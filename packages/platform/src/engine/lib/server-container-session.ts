@@ -59,7 +59,11 @@ export interface ContainerApplySession {
   donePromise?: Promise<ContainerApplyResult>;
 }
 
-const sessions = new TtlCache<ContainerApplySession>({ maxSize: 100, sweepIntervalMs: 60_000 });
+const sessions = new TtlCache<ContainerApplySession>({
+  maxSize: 100,
+  sweepIntervalMs: 60_000,
+  canEvict: (session) => session.status !== "running",
+});
 
 const heartbeat = setInterval(() => {
   for (const session of sessions.values()) {

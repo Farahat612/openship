@@ -81,6 +81,7 @@ import {
   type WorkloadTarget,
 } from "@repo/platform/engine/modules/monitoring/incident.service";
 import { containerHealthSupported, HEALTH_WATCH_JOB, healthWatchActive } from "./health-watch-policy";
+import { desktopNetworkDisconnected } from "../../lib/desktop-network";
 
 /** Consecutive observations that must agree before a fault opens or escalates. */
 const AGREE_TICKS = 2;
@@ -214,6 +215,8 @@ export interface HealthWatchSummary {
   /** Incidents closed because the workload stopped being watched (see below). */
   stale: number;
   unreachable: number;
+  /** Remote server groups not checked because this desktop has no network. */
+  offline: number;
   /**
    * Projects skipped because their deployment record names a target that cannot be
    * resolved to a daemon — see `resolveWatchTargets`. Deliberately not `errors` (the
@@ -588,6 +591,7 @@ async function sweepOnce(opts?: HealthSweepOptions): Promise<HealthWatchSummary>
     resolved: 0,
     stale: 0,
     unreachable: 0,
+    offline: 0,
     unresolved: 0,
     skipped: 0,
     indeterminate: 0,
@@ -833,7 +837,7 @@ async function sweepOnce(opts?: HealthSweepOptions): Promise<HealthWatchSummary>
       // A manual rescan must not enable continuous subscriptions. Re-read after
       // the sweep so a job paused while it was running cannot reopen its streams.
       const job = await repos.job.findByKey(HEALTH_WATCH_JOB);
-      if (healthWatchActive(job)) await renewEventWatchers(allGroupKeys);
+      if (healthWatchActive(job) && !desktopNetworkDisconnected()) await renewEventWatchers(allGroupKeys);
       else await stopAllContainerEventWatchers();
     } catch (err) {
       summary.errors++;
@@ -924,6 +928,12 @@ async function sweepServerGroup(ctx: GroupContext): Promise<void> {
   const serverId = first.serverId;
   const organizationId = first.dep.organizationId;
 
+  if (serverId && desktopNetworkDisconnected()) {
+    summary.offline++;
+    await publishUnknownCandidates(ctx, group);
+    return;
+  }
+
   /** Published the moment it exists, so the `finally` still disposes it on timeout. */
   const handle: GroupHandle = {};
   try {
@@ -945,6 +955,13 @@ async function sweepServerGroup(ctx: GroupContext): Promise<void> {
     // can land between the two).
     for (const candidate of group) ctx.swept.delete(candidate.project.id);
     await publishUnknownCandidates(ctx, group);
+
+    // The network may have disappeared while SSH was connecting. Preserve any
+    // existing incidents, but do not open one against each healthy remote host.
+    if (serverId && desktopNetworkDisconnected()) {
+      summary.offline++;
+      return;
+    }
 
     if (ctx.currentOnly) {
       if (handle.listed && reason !== GROUP_DEADLINE_REASON) {

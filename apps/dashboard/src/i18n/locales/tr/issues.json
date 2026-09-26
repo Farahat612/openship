@@ -49,7 +49,8 @@
     "edge_absent": "Edge kurulu değil",
     "mail_down": "E-posta motoru durdu",
     "update_available": "Güncelleme mevcut",
-    "component_behind": "Bileşen güncellemesi mevcut"
+    "component_behind": "Bileşen güncellemesi mevcut",
+    "monitoring_offline": "Masaüstü çevrimdışı"
   },
   "since": "{when} başladı",
   "resolvedWhen": "{when} çözüldü",
@@ -88,10 +89,17 @@
   "toast": {
     "title": "Sorunlar",
     "rescanned": "Tarama tamamlandı",
-    "rescanPartial": "Tarama tamamlandı, {n} kontrol başarısız",
+    "rescanPartial": "Tarama tamamlandı, {n} kontrolün kapsamı eksik",
     "rescanFailed": "Tarama başarısız",
     "resolved": "Tamam",
     "resolveFailed": "Bu düzeltme uygulanamadı",
     "confirmDestructive": "Bunun geri alınamayan bir yan etkisi var. Devam edilsin mi?"
+  },
+  "connectivity": {
+    "offlineTitle": "Bu cihaz çevrimdışı",
+    "offlineHint": "İzleme bilgileri güncel olmayabilir. Sunucuları yenilemek ve yeniden kontrol etmek için tekrar bağlanın.",
+    "retryStatus": "Durumu yeniden al",
+    "recheck": "Yeniden kontrol et",
+    "unknownHealth": "Openship bu sunucuya ulaşana kadar konteynerlerin durumu bilinmiyor."
   }
 }

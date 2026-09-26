@@ -49,7 +49,8 @@
     "edge_absent": "未安装边缘",
     "mail_down": "邮件引擎已停止",
     "update_available": "有可用更新",
-    "component_behind": "组件有可用更新"
+    "component_behind": "组件有可用更新",
+    "monitoring_offline": "桌面端离线"
   },
   "since": "开始于 {when}",
   "resolvedWhen": "{when} 已解决",
@@ -88,10 +89,17 @@
   "toast": {
     "title": "问题",
     "rescanned": "重新扫描完成",
-    "rescanPartial": "重新扫描完成，{n} 项检查失败",
+    "rescanPartial": "重新扫描完成，{n} 项检查的覆盖范围不完整",
     "rescanFailed": "重新扫描失败",
     "resolved": "完成",
     "resolveFailed": "无法应用该修复",
     "confirmDestructive": "此操作会产生无法撤销的副作用。要继续吗？"
+  },
+  "connectivity": {
+    "offlineTitle": "此设备已离线",
+    "offlineHint": "监控信息可能已过期。请重新连接以刷新并重新检查服务器。",
+    "retryStatus": "重试获取状态",
+    "recheck": "重新检查",
+    "unknownHealth": "在 Openship 能够连接此服务器之前，容器健康状态未知。"
   }
 }

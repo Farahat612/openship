@@ -104,6 +104,8 @@ export function createSessionManager(options: SessionManagerOptions = {}) {
   const sessions = new TtlCache<BuildSessionState>({
     maxSize: SYSTEM.SSE.MAX_SESSIONS,
     sweepIntervalMs: SYSTEM.SSE.SWEEP_INTERVAL_MS,
+    canEvict: (session) => ["ready", "failed", "cancelled"].includes(session.status) &&
+      !session.decisionPending && !session.currentPrompt,
   });
 
   /** Send keep-alive pings to all active subscribers to prevent connection drops */

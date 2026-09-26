@@ -280,11 +280,13 @@ export async function kickoffBuild(project: Project, dep: Deployment): Promise<s
   }
   dep.status = "building";
 
-  sessionManager.createSession(dep.id, project.id);
   const cancellationSignal = registerDeploymentExecution(dep.id);
 
   void (async () => {
     try {
+      // Session admission can fail at capacity. It belongs inside the worker's
+      // failure/lease cleanup so the claimed deployment cannot remain stuck.
+      sessionManager.createSession(dep.id, project.id);
       await executeBuildAndDeploy(project, dep, buildSession.id, cancellationSignal);
     } catch (err) {
       console.error(`[DEPLOY] Fatal error for ${dep.id}:`, err);

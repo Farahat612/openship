@@ -53,6 +53,7 @@ export type SseWriter = (event: string, data: string) => boolean;
 const sessions = new TtlCache<SetupSessionState>({
   maxSize: 50,
   sweepIntervalMs: 60_000,
+  canEvict: (session) => session.status !== "running" && !session.pendingPrompt,
 });
 
 // ─── Heartbeat ───────────────────────────────────────────────────────────────

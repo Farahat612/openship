@@ -399,6 +399,9 @@ export interface PermissionSpec {
    * Prefer this over the deprecated `mcp.body`.
    */
   body?: TSchema;
+  /** The shared operation validates this same schema. Keeps its optional-input
+   * semantics (including an empty JSON body) and MCP metadata in one contract. */
+  bodyValidatedByOperation?: boolean;
 }
 
 export interface PublicSpec {

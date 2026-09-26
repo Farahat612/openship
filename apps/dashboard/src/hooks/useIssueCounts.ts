@@ -50,12 +50,14 @@ export function useIssueCounts(organizationId: string | null | undefined): Issue
     void refresh();
     const interval = window.setInterval(() => void refresh(), POLL_MS);
     window.addEventListener("focus", refresh);
+    window.addEventListener("online", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => {
       cancelled = true;
       unsubscribe();
       window.clearInterval(interval);
       window.removeEventListener("focus", refresh);
+      window.removeEventListener("online", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
   }, [organizationId]);

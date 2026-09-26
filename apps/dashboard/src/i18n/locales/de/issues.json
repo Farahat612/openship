@@ -49,7 +49,8 @@
     "edge_absent": "Edge nicht installiert",
     "mail_down": "Mail-Engine ist gestoppt",
     "update_available": "Update verfügbar",
-    "component_behind": "Komponenten-Update verfügbar"
+    "component_behind": "Komponenten-Update verfügbar",
+    "monitoring_offline": "Desktop ohne Verbindung"
   },
   "since": "Beginn {when}",
   "resolvedWhen": "Behoben {when}",
@@ -88,10 +89,17 @@
   "toast": {
     "title": "Probleme",
     "rescanned": "Prüfung abgeschlossen",
-    "rescanPartial": "Prüfung abgeschlossen, {n} Prüfung(en) fehlgeschlagen",
+    "rescanPartial": "Scan abgeschlossen, {n} Prüfung(en) mit unvollständiger Abdeckung",
     "rescanFailed": "Prüfung fehlgeschlagen",
     "resolved": "Fertig",
     "resolveFailed": "Diese Korrektur konnte nicht angewendet werden",
     "confirmDestructive": "Das hat eine Nebenwirkung, die nicht rückgängig gemacht werden kann. Fortfahren?"
+  },
+  "connectivity": {
+    "offlineTitle": "Dieses Gerät ist offline",
+    "offlineHint": "Die Überwachung ist möglicherweise veraltet. Verbinde dich erneut, um die Server zu aktualisieren und zu prüfen.",
+    "retryStatus": "Status erneut laden",
+    "recheck": "Erneut prüfen",
+    "unknownHealth": "Der Zustand der Container ist unbekannt, bis Openship diesen Server erreicht."
   }
 }

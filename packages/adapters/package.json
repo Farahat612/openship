@@ -12,6 +12,10 @@
     "./proxy": {
       "types": "./src/system/proxy/cli.ts",
       "import": "./src/system/proxy/cli.ts"
+    },
+    "./container-logging": {
+      "types": "./src/container-logging.ts",
+      "import": "./src/container-logging.ts"
     }
   },
   "scripts": {
