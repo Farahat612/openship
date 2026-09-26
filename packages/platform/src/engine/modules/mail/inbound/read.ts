@@ -188,20 +188,22 @@ export async function runInboundForServer(opts: {
       }
 
       if (!dryRun) {
+        const retry = new Set<string>();
         for (const [ruleId, group] of perRule) {
           try {
             emitted += await emitForRule(organizationId, serverId, domain, group);
             await repos.mailInbound.markMatched(ruleId).catch(() => undefined);
           } catch (err) {
+            for (const { message } of group) retry.add(message.file);
             errors.push(`${domain} rule ${ruleId}: ${safeErrorMessage(err)}`);
           }
         }
         // Delete AFTER dispatch. A message that produced no match is deleted too: it was
         // examined and rejected, and leaving it would re-examine it forever.
-        // Handled messages must be deleted even if an emit failed so a poisoned message
-        // does not cause infinite 60-second reprocessing loops.
+        // A failed enqueue has no durable retry yet. Keep every message needed by
+        // that rule, while pruning unrelated successes and deliberate rejections.
         try {
-          await deleteMessages(serverId, folder, handled);
+          await deleteMessages(serverId, folder, handled.filter((file) => !retry.has(file)));
         } catch (delErr) {
           errors.push(`${domain} message cleanup: ${safeErrorMessage(delErr)}`);
         }
@@ -279,7 +281,7 @@ async function emitForRule(
 
   let sent = 0;
   for (const channelId of channelIds) {
-    const channel = await repos.notificationChannel.findById(channelId).catch(() => null);
+    const channel = await repos.notificationChannel.findById(channelId);
     // `verified` is the ONLY gate the dispatcher applies before shipping org payloads to
     // an outbound URL, so a direct enqueue has to apply it too — otherwise this path
     // becomes the way to post to an unverified endpoint.
@@ -287,39 +289,25 @@ async function emitForRule(
 
     // A rule must not be able to name another tenant's channel. The dispatcher gets this
     // for free by looking subscriptions up per org; a direct enqueue has to check.
-    const channelOrgId = await resolveChannelOrg(channel.userId);
-    if (!channelOrgId || channelOrgId !== organizationId) continue;
+    const memberships = await repos.member.listByUser(channel.userId);
+    if (!memberships.some((member) => member.organizationId === organizationId)) continue;
 
     for (const payload of payloads) {
-      await repos.notificationDelivery
-        .create({
-          userId: channel.userId,
-          organizationId,
-          auditEventId: null,
-          category: MAIL_INBOUND_EVENT,
-          channelId: channel.id,
-          channelKind: channel.kind,
-          status: "queued",
-          attempts: 0,
-          payload: { ...payload, resourceType: "mail_server", resourceId: serverId },
-        })
-        .then(() => {
-          sent++;
-        })
-        .catch((err) => {
-          console.warn(
-            `[mail:inbound] could not queue delivery for rule ${rule.id}: ${safeErrorMessage(err)}`,
-          );
-        });
+      await repos.notificationDelivery.create({
+        userId: channel.userId,
+        organizationId,
+        auditEventId: null,
+        category: MAIL_INBOUND_EVENT,
+        channelId: channel.id,
+        channelKind: channel.kind,
+        status: "queued",
+        attempts: 0,
+        payload: { ...payload, resourceType: "mail_server", resourceId: serverId },
+      });
+      sent++;
     }
   }
   return sent;
-}
-
-/** A channel belongs to a user; the org is that user's membership. */
-async function resolveChannelOrg(userId: string): Promise<string | null> {
-  const members = await repos.member.listByUser(userId).catch(() => []);
-  return members[0]?.organizationId ?? null;
 }
 
 /**
