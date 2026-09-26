@@ -185,8 +185,8 @@ export const project = pgTable(
     startCommand: text("start_command"),
     /**
      * Commands run ONCE per deploy, between a successful build and the cutover
-     * to the new version — `php artisan migrate --force`, `rails db:migrate`,
-     * cache warms. A non-zero exit fails the deploy, so the previous version
+     * to the new version — `php artisan migrate --force`, `rails db:migrate`.
+     * A non-zero exit fails the deploy, so the previous version
      * keeps serving.
      *
      * A LIST rather than one `&&`-chained string (the shape `startCommand` and

@@ -127,50 +127,47 @@ Nothing is injected for you. A framework's release set is a choice, so an app wi
 Rails uses `db:prepare` rather than `db:migrate` because it also creates the database and
 loads the schema when it is empty, which is exactly the state of a first deploy.
 
-Each command gets the same environment variables as your start command, secrets included,
-and a bounded 10-minute budget. On the Docker runtime it runs in a throwaway container
-built from the new image, with the project's volumes mounted; on the bare runtime it runs
-in the staged release directory. Openship Cloud has no one-off execution primitive, and a
-static site has no runtime at all; on those the commands are reported in the deploy log
-and skipped rather than silently dropped.
+Set these commands in **Build settings → Before activation**, `openship.json`, or the
+project API/SDK. A repository scan seeds a new project; existing projects keep their saved
+commands, including an explicit empty list. The list is frozen on each deployment.
 
-<Callout title="Only effects outside the container survive" type="warn">
-On Docker the release container is removed when the command finishes, so only what it
-writes **outside** itself persists: the database, or a mounted volume. Cache warms
-(`php artisan optimize`, `config:cache`), symlinks (`storage:link`) and collected assets
-(`collectstatic`) would do their work in a filesystem nothing serves from. Put those in the
-start command, so every running container prepares them with its real environment, or in
-the build.
+Each command gets the same environment variables as your start command and a 10-minute
+budget. It runs once per forward deployment attempt, in list order. Failure, timeout, or
+cancellation stops activation and leaves the previous application running.
 
-A database kept in a file follows the same rule. A stock Laravel app keeps SQLite at
-`database/database.sqlite`, which is not a persisted path, so on Docker the release phase
-would migrate a copy and discard it. Point `DB_DATABASE` at a file under a persisted path
-such as `storage/`, or use an external database (see the next note before attaching a
-database service). On the bare runtime, persisted paths are linked in only after the
-release phase, so a database file under one would be migrated in the release's own copy
-rather than the persisted one: use an external database there.
+On Docker, each command runs in a temporary container using the candidate image, the
+project's persistent mounts, and its connected-service networks. It publishes no ports
+and does not restart. Openship removes the container and its anonymous scratch volumes
+afterwards. On Bare, commands run in the staged release directory **after persistent
+paths are linked**, before the supervisor changes the running app. When a forward deploy
+reuses a retained Bare release, the command gets a temporary copy so it cannot edit the
+live application's files.
+
+<Callout title="Use persistent storage for data" type="warn">
+Only database and mounted-volume changes survive a Docker release container. Put
+image-local cache generation, symlinks, and collected assets in the build or start
+command. Store SQLite files under a declared persistent path, such as `storage/`, so the
+release command and app use the same database on both Docker and Bare.
 </Callout>
 
-<Callout title="Not supported on projects with services yet" type="warn">
-A project runs the release phase only on the **single-app** path. Attaching any service,
-including the database your migrations need, routes the project onto the services/compose
-pipeline, and there the declared commands are named in the deploy log and skipped.
+<Callout title="Runtime support" type="warn">
+Release commands currently require a **single-app Docker or Bare deployment**, including
+portless workers. The app may use attached or connected database services without changing
+its single-app deployment mode.
 
-This is a real limitation rather than a design choice: a compose release phase has to name
-which service to run in, and that is not modelled yet. If your app needs both a service and
-a release phase today, run the commands through the service terminal after the deploy, or
-point the app at an external managed database. Compose support is the intended follow-up.
+Full Compose/monorepo deployments, static sites, and runtimes without one-off command
+support **fail before activation** when commands are configured. Per-service release
+commands are not implemented. An action explicitly targeting only selected services skips
+the main app's release commands.
 </Callout>
 
-<Callout title="Rollbacks do not replay them">
-Rolling back promotes a release that was already built, so its release commands are **not**
-re-run: the schema is already ahead of the version coming back, and a phase that can fail a
-deploy has no business running on the recovery path. A redeploy that genuinely rebuilds an
-older deployment still runs the commands that release declared.
-</Callout>
+<Callout title="Rollbacks and database changes" type="warn">
+Rollbacks skip release commands, including rollbacks that rebuild from Git. Other redeploys
+run the commands saved on that deployment, even when they reuse an existing image.
 
-<Callout title="Not a deploy hook">
-This runs **during** a deploy. It is not an inbound trigger that starts one.
+Use idempotent commands and schema changes compatible with the previous application.
+**Rolling code back does not undo database changes**, and a command may have made partial
+changes before failing. Openship does not promise a transaction across multiple commands.
 </Callout>
 
 ## Persistent storage
@@ -438,7 +435,7 @@ the required roots and start commands.
 | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
 | `framework`, `packageManager`, `*Command`, `outputDirectory`, `buildImage`, `productionPaths`, `rootDirectory` | Build settings                                    |
 | `port`, `productionMode`, `runtime`                                                                            | Runtime settings (`hasServer`, runtime isolation) |
-| `releaseCommands`                                                                                              | Release phase (API only for now)                  |
+| `releaseCommands`                                                                                              | Build settings → Before activation                  |
 | `volumes`                                                                                                      | Configuration → Persistent storage                |
 | `env`                                                                                                          | Environment variables (seeded as editable rows)   |
 | `domains`                                                                                                      | Public endpoints / custom domains                 |

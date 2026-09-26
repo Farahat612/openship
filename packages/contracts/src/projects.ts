@@ -1,6 +1,6 @@
 import { Type, type Static } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
-import type { TCreateProjectBody, TEnsureProjectBody, TUpdateProjectBody } from "./project-inputs";
+import { EnsureProjectBody, type TCreateProjectBody, type TEnsureProjectBody, type TUpdateProjectBody } from "./project-inputs";
 import type { ProjectControlOperations } from "./project-controls";
 import type { ProjectLocalOperations } from "./project-local";
 import type { ProjectLogStreams } from "./project-logs";
@@ -35,6 +35,7 @@ export const ProjectSchema = Type.Object({
   buildCommand: Type.Optional(nullableString()),
   installCommand: Type.Optional(nullableString()),
   startCommand: Type.Optional(nullableString()),
+  releaseCommands: EnsureProjectBody.properties.releaseCommands,
   outputDirectory: Type.Optional(nullableString()),
   rootDirectory: Type.Optional(nullableString()),
   hasServer: Type.Optional(Type.Boolean()),

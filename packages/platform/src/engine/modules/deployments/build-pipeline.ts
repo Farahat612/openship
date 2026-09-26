@@ -130,7 +130,7 @@ import {
   outputFindingIsBroken,
   staticOutputTargets,
 } from "./output-audit.service";
-import { RELEASE_COMMAND_TIMEOUT_MS, resolveReleaseCommands, runReleasePhase } from "./release-phase";
+import { RELEASE_COMMAND_TIMEOUT_MS, releasePhaseSkipReason, resolveReleaseCommands, runReleasePhase } from "./release-phase";
 import { createBuildConfig } from "./build-config";
 import {
   pinnedAppImage,
@@ -1094,6 +1094,17 @@ async function executeBuildAndDeploy(
     }
 
     if (useServicePipeline && isMultiServiceRuntime(runtime)) {
+      // A compose project's release phase would have to name a SERVICE to run in
+      // (there is no single app image), which v1 doesn't model — so say so
+      // instead of dropping the declaration on the floor.
+      await runReleasePhase({
+        commands: resolveReleaseCommands(snapshot.releaseCommands),
+        deliberateSkipReason: releasePhaseSkipReason(dep.trigger, snapshot.targetServiceIds),
+        signal: cancellationSignal,
+        unsupportedReason: "Project release commands are not supported on multi-service deployments",
+        log: (message, level) => logger.log(`${message}\n`, level),
+      });
+
       // snapshot.composeServices is a DeployableService[] - mixed compose +
       // monorepo. syncFromCompose strictly owns compose rows; passing a
       // monorepo entry in causes a ghost compose-kind row to be inserted
@@ -1110,15 +1121,6 @@ async function executeBuildAndDeploy(
           removeMissing: false,
         });
       }
-
-      // A compose project's release phase would have to name a SERVICE to run in
-      // (there is no single app image), which v1 doesn't model — so say so
-      // instead of dropping the declaration on the floor.
-      await runReleasePhase({
-        commands: resolveReleaseCommands(snapshot.releaseCommands),
-        unsupportedReason: "Release commands aren't supported on services/compose projects yet",
-        log: (message, level) => logger.log(`${message}\n`, level),
-      });
 
       // Clone-on-server for compose: open one repo-pinned relay for the whole
       // fan-out (all services share the same repo), thread its helper path into
@@ -1351,13 +1353,18 @@ async function executeBuildAndDeploy(
       if (hostPortTargetLockHeld && !phase.hostPortTarget) {
         throw new Error("Cannot allocate a routed host port without a physical target identity");
       }
+      const deployConfig = createServerDeployConfig(phase);
+      // Release work can take minutes; it must not hold the server-wide port lock.
+      // The project execution lease still excludes another deployment or teardown.
+      await executeReleasePhase(phase, deployConfig);
+      throwIfDeploymentCancelled(cancellationSignal);
       await (hostPortTargetLockHeld
         ? withHostPortTargetLock(
             phase.hostPortTarget!,
-            () => executeServerDeploy(phase),
+            () => executeServerDeploy(phase, deployConfig),
             cancellationSignal,
           )
-        : executeServerDeploy(phase));
+        : executeServerDeploy(phase, deployConfig));
     }
   } catch (err) {
     // Cancellation is a normal terminal outcome, not a pipeline failure. This
@@ -1457,7 +1464,9 @@ async function executeStaticEdgeDeploy(
   // in. Declared commands are named in the log rather than silently dropped.
   await runReleasePhase({
     commands: resolveReleaseCommands(snapshot.releaseCommands),
-    unsupportedReason: "A static edge (Pages) deploy has no runtime to run release commands in",
+    deliberateSkipReason: releasePhaseSkipReason(dep.trigger, snapshot.targetServiceIds),
+    signal: phase.cancellationSignal,
+    unsupportedReason: "Static edge deployments cannot run release commands",
     log: (message, level) => logger.log(`${message}\n`, level),
   });
 
@@ -1513,7 +1522,6 @@ async function executeStaticEdgeDeploy(
  * URL) — so no closure re-branches `isStaticFileServe`/`runtime.name`.
  */
 interface ServeStrategy {
-  readonly restartPolicy: "no" | "always";
   readonly canOverlap: boolean;
   /** Preflight: ensure the runtime/toolchain is ready. Noop for static file-serve
    *  (nothing runs). */
@@ -1800,8 +1808,84 @@ function buildDeployEnvironment(
   };
 }
 
+/** One candidate configuration for release commands and activation. Host-port
+ * reservations and the previous release are assigned during activation preflight. */
+function createServerDeployConfig(phase: DeployPhaseInputs): DeployConfig {
+  const { dep, project, snapshot, buildSessionId, buildResult, envMap, prodResources, routeState } = phase;
+  return {
+    deploymentId: dep.id,
+    projectId: project.id,
+    buildSessionId,
+    imageRef: buildResult.imageRef!,
+    prebuiltImage: Boolean(snapshot.releaseImageRef),
+    environment: dep.environment,
+    port: snapshot.port,
+    // A worker publishes and dials nothing: the runtime skips ExposedPorts /
+    // PortBindings / PORT (issue #538-B). `port` is left set but inert.
+    portless: phase.deployRouting.deployMode === "worker",
+    // The build may override the start command once it knows the output shape
+    // (e.g. Next.js standalone → `node server.js` instead of `next start`).
+    startCommand: buildResult.startCommand ?? snapshot.startCommand,
+    stack: snapshot.framework,
+    // Lets the runtime put the project's `node_modules/.bin` on PATH before the
+    // start command runs — `next start` is a dependency binary, not a system one.
+    packageManager: snapshot.packageManager,
+    envVars: envMap,
+    resources: prodResources,
+    restartPolicy: phase.deployRouting.deployMode === "static-file-serve" ? "no" : "always",
+    runtimeName: project.slug ?? project.id,
+    slug: project.slug ?? project.id,
+    // Stable per-project DNS alias so a single-app native container is
+    // reachable east-west (another linked project resolves `<alias>:<port>`),
+    // mirroring what compose services already get. Read only by
+    // DockerRuntime.deploy(); other runtimes ignore it. Publishing stays
+    // loopback-only — an alias is not exposure until an explicit link
+    // (attachLinkedNetworks) puts a consumer on this project's network.
+    networkAlias: normalizeServiceLabel(project.slug || project.name),
+    // A user-chosen custom hostname (Stage D) resolves ALONGSIDE the default.
+    extraAliases: project.internalAlias
+      ? [normalizeServiceLabel(project.internalAlias)]
+      : undefined,
+    publicEndpoints: routeState.publicEndpoints,
+    outputDirectory: snapshot.outputDirectory,
+    // Optional chaining for the same reason as `volumes` below: a snapshot
+    // persisted before this field existed (or one that simply never set it) has
+    // none, and a redeploy/restore of that release must not crash on it. It did —
+    // `.length` on undefined — which made every such release un-restorable.
+    productionPaths: snapshot.productionPaths?.length ? snapshot.productionPaths : undefined,
+    // `?? []` because a snapshot persisted before this field existed has none —
+    // redeploying an old deployment must not crash on it.
+    volumes: snapshot.volumes ?? [],
+  };
+}
+
+async function executeReleasePhase(phase: DeployPhaseInputs, config: DeployConfig): Promise<void> {
+  const { dep, snapshot, runtime, project, logger, cancellationSignal } = phase;
+  const processWorkload = phase.deployRouting.deployMode === "server" ||
+    phase.deployRouting.deployMode === "worker";
+  await runReleasePhase({
+    commands: resolveReleaseCommands(snapshot.releaseCommands),
+    deliberateSkipReason: releasePhaseSkipReason(dep.trigger, snapshot.targetServiceIds),
+    signal: cancellationSignal,
+    run: processWorkload && runtime.supports("releaseCommand") && runtime.runReleaseCommand
+      ? (command) => runtime.runReleaseCommand!(config, command, logger.callback, {
+          timeoutMs: RELEASE_COMMAND_TIMEOUT_MS,
+          signal: cancellationSignal,
+          beforeStart: (containerId) => attachLinkedNetworks(
+            project.id, runtime, (message, level) => logger.log(`${message}\n`, level),
+            dep.id, [containerId],
+          ),
+        })
+      : undefined,
+    unsupportedReason: processWorkload
+      ? `The "${runtime.name}" runtime cannot run release commands`
+      : "Static sites cannot run release commands",
+    log: (message, level) => logger.log(`${message}\n`, level),
+  });
+}
+
 /** Server deploy via runDeployPipeline (VM / Docker / Bare). Handles static-self-hosted too. */
-async function executeServerDeploy(phase: DeployPhaseInputs): Promise<void> {
+async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: DeployConfig): Promise<void> {
   const {
     ctx,
     project,
@@ -1871,7 +1955,6 @@ async function executeServerDeploy(phase: DeployPhaseInputs): Promise<void> {
   // edge/routing orchestration stays there (not duplicated per strategy).
   const baseServe: ServeStrategy = isStaticFileServe
     ? {
-        restartPolicy: "no",
         canOverlap: false,
         ensureRuntimeReady: async () => {},
         ensurePorts: async () => {},
@@ -1912,7 +1995,6 @@ async function executeServerDeploy(phase: DeployPhaseInputs): Promise<void> {
         readinessWorksRemotely: true,
       }
     : {
-        restartPolicy: "always",
         // Overlap (run-new-then-swap, zero-downtime) needs a unique container +
         // its own host port; a pinned loopback port can't be double-bound and bare
         // binds a fixed port → stop-first.
@@ -2125,107 +2207,7 @@ async function executeServerDeploy(phase: DeployPhaseInputs): Promise<void> {
     : undefined;
 
   const prevDep = await findActiveDeployment(project);
-  const deployConfig: DeployConfig = {
-    deploymentId: dep.id,
-    projectId: project.id,
-    buildSessionId,
-    imageRef: buildResult.imageRef!,
-    prebuiltImage: Boolean(snapshot.releaseImageRef),
-    environment: dep.environment,
-    port: snapshot.port,
-    // A worker publishes and dials nothing: the runtime skips ExposedPorts /
-    // PortBindings / PORT (issue #538-B). `port` is left set but inert.
-    portless: isWorker,
-    ...(pinnedHostPort !== undefined ? { hostPort: pinnedHostPort } : {}),
-    // The build may override the start command once it knows the output shape
-    // (e.g. Next.js standalone → `node server.js` instead of `next start`).
-    startCommand: buildResult.startCommand ?? snapshot.startCommand,
-    stack: snapshot.framework,
-    // Lets the runtime put the project's `node_modules/.bin` on PATH before the
-    // start command runs — `next start` is a dependency binary, not a system one.
-    packageManager: snapshot.packageManager,
-    envVars: envMap,
-    resources: prodResources,
-    restartPolicy: serve.restartPolicy,
-    runtimeName: project.slug ?? project.id,
-    slug: project.slug ?? project.id,
-    // Stable per-project DNS alias so a single-app native container is
-    // reachable east-west (another linked project resolves `<alias>:<port>`),
-    // mirroring what compose services already get. Read only by
-    // DockerRuntime.deploy(); other runtimes ignore it. Publishing stays
-    // loopback-only — an alias is not exposure until an explicit link
-    // (attachLinkedNetworks) puts a consumer on this project's network.
-    networkAlias: normalizeServiceLabel(project.slug || project.name),
-    // A user-chosen custom hostname (Stage D) resolves ALONGSIDE the default.
-    extraAliases: project.internalAlias
-      ? [normalizeServiceLabel(project.internalAlias)]
-      : undefined,
-    publicEndpoints: routeState.publicEndpoints,
-    outputDirectory: snapshot.outputDirectory,
-    // Optional chaining for the same reason as `volumes` below: a snapshot
-    // persisted before this field existed (or one that simply never set it) has
-    // none, and a redeploy/restore of that release must not crash on it. It did —
-    // `.length` on undefined — which made every such release un-restorable.
-    productionPaths: snapshot.productionPaths?.length ? snapshot.productionPaths : undefined,
-    // `?? []` because a snapshot persisted before this field existed has none —
-    // redeploying an old deployment must not crash on it.
-    volumes: snapshot.volumes ?? [],
-    // Bare uses this to hard-link identical files across releases.
-    // Other runtimes ignore it.
-    previousDeploymentId: prevDep?.id,
-    // Frozen on the snapshot, so a redeploy that REBUILDS an old deployment runs
-    // the commands THAT release declared rather than today's. A rollback restore
-    // is the one case that does not replay them (see the release phase below).
-    // Absent on pre-release-phase rows.
-    releaseCommands: snapshot.releaseCommands,
-  };
-
-  // ── Release phase: after the build, before ANY cutover ────────────────────
-  // Placed here on purpose. Nothing below has touched the live deployment yet —
-  // the previous version is running and routed, no domain row has been created,
-  // runDeployPipeline hasn't been entered — so a failed migration aborts with the
-  // old version still serving and nothing to roll back. It is the same boundary
-  // for every runtime this path serves: docker/bare/static all activate inside
-  // runDeployPipeline's `activate` step, which is strictly after this.
-  const releaseCommands = resolveReleaseCommands(deployConfig.releaseCommands);
-  if (releaseCommands.length > 0) {
-    // A ROLLBACK DOES NOT REPLAY THEM. `pinnedAppImage` is set only by a rollback
-    // restore (a plain Redeploy runs `withoutPinnedArtifacts` and rebuilds), so it
-    // is the exact discriminator here: pinned means "promote a release we already
-    // built", unpinned means "this build is new". Replaying is close to pointless
-    // in the good case — the schema is already ahead of the release coming back, so
-    // `migrate` finds nothing to do — and harmful in the bad one, because rollback
-    // is the emergency path and a phase that can fail the deploy is a new way for
-    // the recovery itself to abort. The snapshot freeze above still stands: a
-    // redeploy that genuinely rebuilds an old release DOES run that release's
-    // commands. Only the way back skips.
-    const rollbackImage = pinnedAppImage(snapshot);
-    try {
-      await runReleasePhase({
-        commands: releaseCommands,
-        deliberateSkipReason: rollbackImage
-          ? "Rolling back to a release that was already built, so its release commands are not replayed"
-          : undefined,
-        // A static file-serve has no process and no image to run a command in,
-        // and cloud has no one-off execution primitive at all — both fall through
-        // to the logged skip rather than pretending the commands ran.
-        run:
-          !isStaticFileServe && runtime.supports("releaseCommand") && runtime.runReleaseCommand
-            ? (command) =>
-                runtime.runReleaseCommand!(deployConfig, command, logger.callback, {
-                  timeoutMs: RELEASE_COMMAND_TIMEOUT_MS,
-                })
-            : undefined,
-        unsupportedReason: isStaticFileServe
-          ? "A static site has no runtime to run release commands in"
-          : `The "${runtime.name}" runtime can't run release commands yet`,
-        log: (message, level) => logger.log(`${message}\n`, level),
-      });
-    } catch (err) {
-      await onFailure(ctx, safeErrorMessage(err), buildResult.durationMs);
-      return;
-    }
-  }
+  deployConfig.previousDeploymentId = prevDep?.id;
 
   // Resolve the previous deployment + its runtime so we can deactivate it cleanly.
   // A DISTINCT platform from this deploy's, so on a remote server it binds its own

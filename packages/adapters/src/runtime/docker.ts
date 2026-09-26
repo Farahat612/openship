@@ -33,6 +33,7 @@ import Dockerode from "dockerode";
 import * as tarFs from "tar-fs";
 import { randomUUID } from "node:crypto";
 import { createGzip } from "node:zlib";
+import { StringDecoder } from "node:string_decoder";
 
 import type {
   BuildConfig,
@@ -58,6 +59,8 @@ import { resolveDockerBuildArgs } from "./docker-build-args";
 import { dockerPublishedPortInfo } from "./docker-container-info";
 import { applyDockerEnvironment, type DockerEnvironmentOptions } from "./docker-environment";
 import { DEFAULT_CONTAINER_LOG_CONFIG } from "../container-logging";
+import { demuxDockerStream } from "./docker-demux";
+import { releaseCommandDeadline } from "./release-command-deadline";
 
 /**
  * Detect "not found" errors from the Docker SDK (dockerode). The daemon
@@ -119,6 +122,7 @@ import { dockerConfigJsonFor, registryForImage, resolveDockerAuth } from "./dock
 import type {
   RuntimeAdapter,
   RuntimeCapability,
+  ReleaseCommandOptions,
   MultiServiceGroupHandle,
   MultiServiceDeployConfig,
   MultiServiceDeployResult,
@@ -176,6 +180,7 @@ import { splitRuntimeEnv, droppedRuntimeEnvMessage } from "./runtime-env";
 import {
   ownsNetworkEndpoint,
   safeErrorMessage,
+  withTimeout,
   SYSTEM,
   type ComposeAdvanced,
   type ComposeHealthcheck,
@@ -3664,132 +3669,138 @@ export class DockerRuntime implements RuntimeAdapter {
     config: DeployConfig,
     command: string,
     onLog: LogCallback,
-    opts?: { timeoutMs?: number },
+    opts?: ReleaseCommandOptions,
   ): Promise<void> {
-    const imageRef = config.imageRef;
-    if (!imageRef) {
+    if (!config.imageRef) {
       throw new Error("Release commands require an imageRef (built image tag)");
     }
-    const timeoutMs = opts?.timeoutMs ?? SYSTEM.DEPLOYMENTS.RELEASE_COMMAND_TIMEOUT_MS;
+    const deadline = releaseCommandDeadline(opts);
+    const name = `openship-release-${config.deploymentId}-${randomUUID()}`;
+    let container: Dockerode.Container | undefined;
+    let creating = false;
+    let finished = false;
+    let stream: Readable | undefined;
+    const sinks: Writable[] = [];
 
-    // The app's env, from the same function deploy uses — a migration that
-    // resolves its DSN, PATH or PORT differently from the app is worse than no
-    // migration. Logged here too: this phase runs, and can fail, before deploy
-    // ever gets to say it.
-    const { env, dropped } = deploymentContainerEnv(config);
-    if (dropped.length > 0) {
-      onLog({
-        timestamp: new Date().toISOString(),
-        level: "warn",
-        message: droppedRuntimeEnvMessage(dropped),
-      });
-    }
-    const scopedBinds = scopeVolumeBinds(
-      config.slug || config.runtimeName || config.projectId,
-      config.volumes ?? [],
-      true,
-    );
-    // Best-effort, exactly as in deploy: no network just means a release command
-    // can't reach a linked project by alias, which is not a reason to refuse.
-    let networkId: string | undefined;
-    if (config.networkAlias) {
-      networkId = await this.ensureNetwork(
-        config.slug || config.runtimeName || config.projectId,
-      ).catch(() => undefined);
-    }
-
-    const container = await this.docker.createContainer({
-      name: `openship-release-${config.deploymentId}-${Date.now().toString(36)}`,
-      Image: imageRef,
-      // Override the ENTRYPOINT for the same reason the static extract does:
-      // a base image's docker-entrypoint.sh would swallow this Cmd.
-      Entrypoint: ["/bin/sh", "-c"],
-      Cmd: [command],
-      Env: env,
-      Labels: this.labels({
-        deploymentId: config.deploymentId,
-        projectId: config.projectId,
-      }),
-      HostConfig: {
-        Binds: scopedBinds.length > 0 ? scopedBinds : undefined,
-        ...(networkId ? { NetworkMode: networkId } : {}),
-        ...dockerResourceLimits(config.resources),
-      },
-    });
+    // Cleanup has its own budget: the command's signal is already aborted on
+    // cancellation. Remove anonymous scratch volumes; Docker preserves named
+    // volumes and bind mounts shared with the application.
+    const remove = async (target: Dockerode.Container) => {
+      try {
+        await withTimeout(target.remove({ force: true, v: true, abortSignal: AbortSignal.timeout(5_000) }),
+          5_000, "Release container cleanup timed out");
+      } catch (error) {
+        if (!isDockerNotFoundError(error)) onLog({
+          timestamp: new Date().toISOString(), level: "warn",
+          message: `Could not confirm cleanup of release container ${name}: ${safeErrorMessage(error)}\n`,
+        });
+      }
+    };
 
     try {
-      await container.start();
+      deadline.signal.throwIfAborted();
+      const { env, dropped } = deploymentContainerEnv(config);
+      if (dropped.length > 0) onLog({
+        timestamp: new Date().toISOString(), level: "warn",
+        message: droppedRuntimeEnvMessage(dropped),
+      });
+      const scopedBinds = scopeVolumeBinds(
+        config.slug || config.runtimeName || config.projectId, config.volumes ?? [], true,
+      );
+      const networkId = config.networkAlias
+        ? await deadline.wait(() => this.ensureNetwork(
+            config.slug || config.runtimeName || config.projectId, deadline.signal,
+          ))
+        : undefined;
 
-      // Follow from the start of the container's life — `tail` is deliberately
-      // omitted, since the daemon's default is the whole log, so opening the
-      // stream after `start()` can't lose the first lines.
-      const stream = (await container.logs({
-        stdout: true,
-        stderr: true,
-        follow: true,
-      })) as unknown as NodeJS.ReadableStream;
+      container = await deadline.wait(async () => {
+        creating = true;
+        const candidate = await this.docker.createContainer({
+          name,
+          Image: config.imageRef,
+          Entrypoint: ["/bin/sh", "-c"],
+          Cmd: [command],
+          Env: env,
+          Tty: false,
+          // This is temporary build-session work, not an activated deployment.
+          // Reuse builder ownership so cancellation/teardown can reclaim it and
+          // deployment discovery cannot mistake a migration for the live app.
+          Labels: this.labels({ sessionId: config.buildSessionId, projectId: config.projectId }),
+          HostConfig: {
+            Binds: scopedBinds.length > 0 ? scopedBinds : undefined,
+            ...(networkId ? { NetworkMode: networkId } : {}),
+            ...dockerResourceLimits(config.resources),
+            LogConfig: DEFAULT_CONTAINER_LOG_CONFIG,
+          },
+          abortSignal: deadline.signal,
+        });
+        // A transport may deliver the create response after cancellation. The
+        // caller has already unwound, so reclaim this late result here as well.
+        if (finished) await remove(candidate);
+        return candidate;
+      });
+      await deadline.wait(() => opts?.beforeStart?.(container!.id) ?? Promise.resolve());
+      await deadline.wait(() => container!.start({ abortSignal: deadline.signal }));
+      stream = await deadline.wait(async () => {
+        const output = await container!.logs({
+          stdout: true, stderr: true, follow: true, abortSignal: deadline.signal,
+        }) as unknown as Readable;
+        if (finished) output.destroy();
+        return output;
+      });
 
-      // Tail kept for the failure message: the operator has to be able to read
-      // WHY a migration failed without going to find the deploy log.
+      // Use the shared streaming parser: a Docker header or a UTF-8 character
+      // can straddle transport chunks. Retain only a bounded error tail.
       let tail = "";
-      let buffer = "";
-      stream.on("data", (chunk: Buffer) => {
-        const text = stripDockerChunkHeader(chunk).toString("utf-8");
-        tail = (tail + text).slice(-4000);
-        buffer += text;
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          onLog({ timestamp: new Date().toISOString(), message: `${line}\n`, level: parseLogLevel(line) });
-        }
+      const streamDone = new Promise<void>((resolve, reject) => {
+        const sink = (level: "info" | "warn") => {
+          const decoder = new StringDecoder("utf8");
+          const emit = (text: string, raw?: Buffer) => {
+            tail = (tail + text).slice(-4000);
+            if (text || raw?.length) onLog({
+              timestamp: new Date().toISOString(), message: text, level,
+              ...(raw ? { rawData: raw.toString("base64") } : {}),
+            });
+          };
+          const output = new Writable({
+            write(chunk: Buffer, _encoding, callback) {
+              try { emit(decoder.write(chunk), chunk); callback(); }
+              catch (error) { callback(error as Error); }
+            },
+            final(callback) { emit(decoder.end()); callback(); },
+          });
+          output.on("error", reject);
+          sinks.push(output);
+          return output;
+        };
+        demuxDockerStream(stream!, sink("info"), sink("warn"), reject);
+        stream!.once("end", () => { sinks.forEach(output => output.end()); resolve(); });
+        stream!.once("close", () => {
+          if (!stream!.readableEnded) reject(new Error("Release command log stream closed before completion"));
+        });
       });
-
-      // Resolves when the daemon closes the follow stream, which it does when the
-      // container exits. Awaited alongside `wait` so the last lines the command
-      // wrote before exiting aren't lost to the race between the two.
-      const streamDone = new Promise<void>((resolve) => {
-        stream.on("end", () => resolve());
-        stream.on("close", () => resolve());
-        stream.on("error", () => resolve());
+      // A log transport failure must also interrupt a still-running command.
+      const [status] = await deadline.wait(() => {
+        const completion = container!.wait({ abortSignal: deadline.signal }).then(async status => {
+          await withTimeout(streamDone, 5_000, "Could not finish reading release command output");
+          return status;
+        });
+        return Promise.all([completion, streamDone]);
       });
-
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        (stream as unknown as { destroy?: () => void }).destroy?.();
-        // Stop rather than remove: the finally below removes it, and stopping is
-        // what unblocks the `wait` this race is holding.
-        container.stop({ t: 5 }).catch(() => { /* best effort */ });
-      }, timeoutMs);
-
-      let status: { StatusCode: number };
-      try {
-        status = await container.wait();
-        // Bounded: a daemon that never closes the stream after the container is
-        // gone must cost a couple of seconds, not the whole release budget (which
-        // would then report a finished command as a timeout).
-        await Promise.race([streamDone, new Promise((r) => setTimeout(r, 2_000))]);
-      } finally {
-        clearTimeout(timer);
-        (stream as unknown as { destroy?: () => void }).destroy?.();
-      }
-      if (buffer) {
-        onLog({ timestamp: new Date().toISOString(), message: `${buffer}\n`, level: parseLogLevel(buffer) });
-      }
-
-      if (timedOut) {
-        throw new Error(
-          `Release command timed out after ${Math.round(timeoutMs / 1000)}s: ${command}`,
-        );
-      }
       if (status.StatusCode !== 0) {
-        throw new Error(
-          `Release command failed with exit code ${status.StatusCode}: ${command}` +
-            (tail.trim() ? `\n${tail.trim().slice(-1000)}` : ""),
-        );
+        throw new Error(`Release command failed with exit code ${status.StatusCode}` +
+          (tail.trim() ? `\n${tail.trim().slice(-1000)}` : ""));
       }
+    } catch (error) {
+      deadline.abort(error);
+      throw error;
     } finally {
-      await container.remove({ force: true }).catch(() => { /* best effort */ });
+      finished = true;
+      deadline.dispose();
+      stream?.destroy();
+      sinks.forEach(sink => sink.destroy());
+      // The name lets us clean up even if the create response was lost.
+      if (creating) await remove(container ?? this.docker.getContainer(name));
     }
   }
 
@@ -5103,24 +5114,28 @@ export class DockerRuntime implements RuntimeAdapter {
    * All services in a compose project share this network and can
    * reach each other by service name as hostname.
    */
-  async ensureNetwork(slug: string): Promise<string> {
+  async ensureNetwork(slug: string, signal?: AbortSignal): Promise<string> {
     const networkName = `openship-${slug}`;
     // list-then-create is check-then-act: two concurrent deploys for the same
     // slug would both miss and both create, yielding two networks with the same
     // name (Docker allows it) and ambiguous name lookups. Serialize per server.
     const critical = async () => {
+      signal?.throwIfAborted();
       const networks = await this.docker.listNetworks({
         filters: { name: [networkName] },
+        ...(signal ? { abortSignal: signal } : {}),
       });
 
       // listNetworks does substring matching, verify exact name
       const existing = networks.find((n) => n.Name === networkName);
       if (existing) return existing.Id;
 
+      signal?.throwIfAborted();
       const network = await this.docker.createNetwork({
         Name: networkName,
         Driver: "bridge",
         Labels: { "openship.network": slug },
+        ...(signal ? { abortSignal: signal } : {}),
       });
       return network.id;
     };
@@ -5340,12 +5355,12 @@ export class DockerRuntime implements RuntimeAdapter {
     projectId: string,
     networkNames: string[],
     extraContainerIds: string[] = [],
-    options?: { prunePrefix?: string; retain?: string[]; strict?: boolean },
+    options?: { prunePrefix?: string; retain?: string[]; strict?: boolean; onlyContainerIds?: string[] },
   ): Promise<void> {
     if (networkNames.length === 0 && !options?.prunePrefix) return;
     let containers: Awaited<ReturnType<typeof this.docker.listContainers>>;
     try {
-      containers = await this.docker.listContainers({
+      containers = options?.onlyContainerIds ? [] : await this.docker.listContainers({
         all: true,
         filters: { label: [`openship.project=${projectId}`] },
       });
@@ -5366,9 +5381,10 @@ export class DockerRuntime implements RuntimeAdapter {
      * So the caller may name containers explicitly — the same identity chain the READ paths
      * use (stored container id, not label) — and they are unioned in, de-duped by id.
      */
-    if (extraContainerIds.length > 0) {
+    const includedContainerIds = options?.onlyContainerIds ?? extraContainerIds;
+    if (includedContainerIds.length > 0) {
       const seen = new Set(containers.map((c) => c.Id));
-      for (const id of extraContainerIds) {
+      for (const id of includedContainerIds) {
         if (seen.has(id)) continue;
         try {
           const info = await this.docker.getContainer(id).inspect();
@@ -5380,7 +5396,7 @@ export class DockerRuntime implements RuntimeAdapter {
           seen.add(info.Id);
         } catch (error) {
           // A recorded container may already have been replaced by this deploy.
-          if (options?.strict && !isDockerNotFoundError(error)) throw error;
+          if (options?.onlyContainerIds || (options?.strict && !isDockerNotFoundError(error))) throw error;
         }
       }
     }

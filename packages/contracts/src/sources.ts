@@ -25,6 +25,7 @@ export const SourceScanSchema = Type.Object({
   productionMode: Type.Optional(Type.String()), workloadType: Type.Optional(Type.String()), runtimeMode: Type.Optional(Type.String()),
   composePath: Type.Optional(Type.String()), volumes: EnsureProjectBody.properties.volumes,
   routing: EnsureProjectBody.properties.routingConfig,
+  releaseCommands: EnsureProjectBody.properties.releaseCommands,
   services: Type.Optional(Type.Array(Type.Object({
     ...BuildServiceInput.properties,
     commandArgv: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Null()])),

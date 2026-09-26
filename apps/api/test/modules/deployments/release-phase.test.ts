@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   RELEASE_COMMAND_TIMEOUT_MS,
   resolveReleaseCommands,
+  releasePhaseSkipReason,
   runReleasePhase,
 } from "@repo/platform/engine/modules/deployments/release-phase";
 
@@ -25,8 +26,8 @@ describe("resolveReleaseCommands", () => {
 
   it("keeps declared order and trims", () => {
     expect(
-      resolveReleaseCommands([" php artisan migrate --force ", "php artisan optimize"]),
-    ).toEqual(["php artisan migrate --force", "php artisan optimize"]);
+      resolveReleaseCommands([" php artisan migrate --force ", "php artisan db:seed --force"]),
+    ).toEqual(["php artisan migrate --force", "php artisan db:seed --force"]);
   });
 });
 
@@ -45,15 +46,15 @@ describe("runReleasePhase", () => {
     const ran: string[] = [];
     const lines: string[] = [];
     await runReleasePhase({
-      commands: ["php artisan migrate --force", "php artisan optimize"],
+      commands: ["php artisan migrate --force", "php artisan db:seed --force"],
       run: async (command) => {
         ran.push(command);
       },
       log: (message) => lines.push(message),
     });
-    expect(ran).toEqual(["php artisan migrate --force", "php artisan optimize"]);
+    expect(ran).toEqual(["php artisan migrate --force", "php artisan db:seed --force"]);
     expect(lines.join("\n")).toContain("[release 1/2] $ php artisan migrate --force");
-    expect(lines.join("\n")).toContain("[release 2/2] $ php artisan optimize");
+    expect(lines.join("\n")).toContain("[release 2/2] $ php artisan db:seed --force");
     expect(lines.at(-1)).toBe("Release phase complete.");
   });
 
@@ -63,7 +64,7 @@ describe("runReleasePhase", () => {
     const ran: string[] = [];
     const lines: Array<[string, string | undefined]> = [];
     const failing = runReleasePhase({
-      commands: ["php artisan migrate --force", "php artisan optimize"],
+      commands: ["php artisan migrate --force", "php artisan db:seed --force"],
       run: async (command) => {
         ran.push(command);
         throw new Error("SQLSTATE[42S02]: Base table or view not found");
@@ -78,23 +79,31 @@ describe("runReleasePhase", () => {
     expect(lines.some(([message, level]) => level === "error" && message.includes("[release 1/2]"))).toBe(true);
   });
 
-  // Cloud has no one-off execution primitive (and a static site has no runtime at
-  // all). Skipping is the deliberate choice — but it must be LOUD, naming the
-  // commands, because a silently-unrun migration is the failure mode this whole
-  // feature exists to remove.
-  it("warns and skips, naming the commands, when the runtime can't run them", async () => {
-    const lines: Array<[string, string | undefined]> = [];
-    await runReleasePhase({
-      commands: ["php artisan migrate --force"],
-      run: undefined,
-      unsupportedReason: 'The "cloud" runtime can\'t run release commands yet',
-      log: (message, level) => lines.push([message, level]),
-    });
-    expect(lines).toHaveLength(1);
-    const [message, level] = lines[0]!;
-    expect(level).toBe("warn");
-    expect(message).toContain('The "cloud" runtime can\'t run release commands yet');
-    expect(message).toContain("php artisan migrate --force");
+  it("fails before activation when the runtime cannot run declared commands", async () => {
+    const log = vi.fn();
+    await expect(runReleasePhase({
+      commands: ["migrate"],
+      unsupportedReason: "This runtime cannot run release commands",
+      log,
+    })).rejects.toThrow(/Deployment stopped before activation/);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("cannot run release commands"), "error");
+  });
+
+  it("stops between commands when cancelled and preserves the cancellation reason", async () => {
+    const abort = new AbortController();
+    const run = vi.fn(async () => abort.abort(new Error("User cancelled")));
+    await expect(runReleasePhase({
+      commands: ["migrate", "seed"], run, signal: abort.signal, log: vi.fn(),
+    })).rejects.toThrow("User cancelled");
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("identifies rollbacks and explicit service-only actions without using image reuse", () => {
+    expect(releasePhaseSkipReason("rollback")).toMatch(/Rollback/);
+    expect(releasePhaseSkipReason("redeploy", ["db"])).toMatch(/selected services/);
+    expect(releasePhaseSkipReason("update")).toBeUndefined();
+    expect(releasePhaseSkipReason("migration")).toBeUndefined();
+    expect(releasePhaseSkipReason("redeploy", [])).toBeUndefined();
   });
 
   // A ROLLBACK is the other kind of skip, and it is not a degraded one. Replaying
@@ -118,8 +127,6 @@ describe("runReleasePhase", () => {
     const [message, level] = lines[0]!;
     expect(message).toContain("Rolling back to a release that was already built");
     expect(message).toContain("php artisan migrate --force");
-    // The unsupported-runtime skip tells the operator to run them by hand. Here
-    // that would be the exact wrong instruction.
     expect(message).not.toMatch(/by hand/i);
     // Not a warning: this is the correct outcome of a rollback, and warning on
     // every rollback trains operators to ignore the release-phase log.

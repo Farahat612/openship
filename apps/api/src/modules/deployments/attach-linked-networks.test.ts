@@ -81,6 +81,29 @@ describe("attachLinkedNetworks", () => {
     expect(listByDeployment).not.toHaveBeenCalled();
   });
 
+  it("scopes release preparation to the candidate and skips the live container inventory", async () => {
+    listByTarget.mockResolvedValue([{ mode: "internal", sourceProjectId: "database" }]);
+    findById.mockImplementation(async (id: string) =>
+      id === "database" ? { slug: "database" } : { slug: "app", activeDeploymentId: "live-deploy" },
+    );
+    const attachToExternalNetworks = vi.fn();
+    await attachLinkedNetworks("target", {
+      attachToExternalNetworks, joinServiceGroupContainers: vi.fn(),
+    }, undefined, "candidate-deploy", ["release-container"]);
+    expect(attachToExternalNetworks).toHaveBeenCalledWith(
+      "target", ["openship-database"], [], expect.objectContaining({
+        onlyContainerIds: ["release-container"], strict: true,
+      }),
+    );
+    expect(listByDeployment).not.toHaveBeenCalled();
+  });
+
+  it("fails release preparation when its links cannot be read", async () => {
+    listByTarget.mockRejectedValueOnce(new Error("db down"));
+    await expect(attachLinkedNetworks("target", { attachToExternalNetworks: vi.fn() },
+      undefined, "candidate-deploy", ["release-container"])).rejects.toThrow("db down");
+  });
+
   it("no-ops (never reads links) when the runtime can't join external networks — e.g. cloud", async () => {
     await attachLinkedNetworks("target", {});
     expect(listByTarget).not.toHaveBeenCalled();

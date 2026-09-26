@@ -7,6 +7,7 @@ import { baseDictionary } from "@/i18n";
 import { DeploymentContext } from "@/context/DeploymentContext";
 import Sidebar from "@/app/(dashboard)/(deployment)/deploy/[slug]/components/Sidebar";
 import ProjectSettings from "@/components/import-project/ProjectSettings";
+import BuildSettings from "@/components/import-project/BuildSettings";
 import type { PrepareProjectResponse } from "@/lib/api/deploy";
 import type { DeploymentContextType } from "./types";
 import { useDeploymentConfig } from "./useDeploymentConfig";
@@ -16,6 +17,7 @@ import { CloudDeployPlanModal } from "@/components/billing/CloudDeployPlanModal"
 
 const api = vi.hoisted(() => ({
   prepare: vi.fn(),
+  folderScan: vi.fn(),
   getInfo: vi.fn(),
   getEnv: vi.fn(),
   listServices: vi.fn(),
@@ -48,6 +50,7 @@ vi.mock("@/lib/api", () => ({
   githubApi: {},
   getApiErrorMessage: (error: Error) => error.message,
 }));
+vi.mock("@/lib/api/folder", () => ({ folderApi: { scan: api.folderScan } }));
 vi.mock("@/lib/api/settings", () => ({ settingsApi: { get: async () => ({}) } }));
 vi.mock("@/lib/api/projects", () => ({ projectsApi: { getBranchPage: api.getBranchPage } }));
 vi.mock("@/lib/api/github", () => ({ githubApi: { listBranches: api.getBranchPage } }));
@@ -150,6 +153,7 @@ function Harness() {
     >
       <Sidebar />
       {current.config.projectType === "app" && <ProjectSettings />}
+      {current.config.projectType === "app" && <BuildSettings />}
     </DeploymentContext.Provider>
   );
 }
@@ -237,6 +241,59 @@ afterEach(async () => {
 });
 
 describe("deploy branch detection", () => {
+  it.each([{ commands: ["migrate"] }, { commands: [] }])(
+    "preserves explicit release settings through rescan, save and deploy: $commands",
+    async ({ commands }) => {
+      await act(async () => current.updateConfig({ releaseCommands: commands }));
+      api.prepare.mockResolvedValueOnce(scan("openship", { releaseCommands: ["upstream migration"] }));
+      await selectBranch("openship");
+      expect(current.config.releaseCommands).toEqual(commands);
+      await act(async () => button(baseDictionary.deploy.sidebar.saveChanges).click());
+      expect(api.setOptions).toHaveBeenCalledWith("project-1", expect.objectContaining({ releaseCommands: commands }));
+      await act(async () => { await build.startDeployment(); });
+      expect(api.ensure).toHaveBeenCalledWith(expect.objectContaining({ releaseCommands: commands }));
+    },
+  );
+
+  it("hydrates saved release commands when editing a project", async () => {
+    api.getInfo.mockResolvedValueOnce({ data: { project: {
+      id: "project-1", name: "Demo", framework: "node", gitOwner: "example", gitRepo: "demo",
+      gitBranch: "main", releaseCommands: ["node migrate.js"],
+    } } });
+    api.listServices.mockResolvedValueOnce({ services: [] });
+    await act(async () => { await current.initializeFromProject("project-1"); });
+    expect(current.config.releaseCommands).toEqual(["node migrate.js"]);
+  });
+
+  it("seeds a new project from openship.json and lets the operator remove a command", async () => {
+    api.prepare.mockResolvedValueOnce(scan("main", { releaseCommands: ["node migrate.js"] }));
+    await act(async () => { await current.initializeFromRepo("example", "fresh"); });
+    expect(current.config.releaseCommands).toEqual(["node migrate.js"]);
+    const command = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Command 1"]');
+    expect(command?.value).toBe("node migrate.js");
+    const remove = container.querySelector<HTMLButtonElement>('button[aria-label="Remove command 1"]');
+    expect(remove).not.toBeNull();
+    await act(async () => remove!.click());
+    expect(current.config.releaseCommands).toEqual([]);
+  });
+
+  it("seeds commands found on another branch of a new, unedited project", async () => {
+    await act(async () => { await current.initializeFromRepo("example", "fresh"); });
+    api.prepare.mockResolvedValueOnce(scan("openship", { releaseCommands: ["node migrate.js"] }));
+    await selectBranch("openship");
+    expect(current.config.releaseCommands).toEqual(["node migrate.js"]);
+  });
+
+  it("imports commands from an uploaded folder even when a stack was selected", async () => {
+    api.folderScan.mockResolvedValue({ ...scan("main"), name: "Uploaded app", releaseCommands: ["node migrate.js"] });
+    await act(async () => {
+      const result = await current.initializeFromUpload("upload-1", { stack: "node", name: "Uploaded app" });
+      expect(result.success).toBe(true);
+    });
+    expect(current.config.releaseCommands).toEqual(["node migrate.js"]);
+    expect(current.config.framework).toBe("node");
+  });
+
   it("rescans from the branch dropdown, replaces compose defaults, and preserves project edits", async () => {
     const baseline = current.config.projectEnvBaseline;
     const secret = current.config.envVars[0];

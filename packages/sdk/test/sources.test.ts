@@ -13,7 +13,7 @@ async function directory() {
 }
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 
-function server() {
+function server(scanOverrides: Record<string, unknown> = {}) {
   let archive: Buffer | undefined;
   const commands: Array<{ path: string; body: Record<string, unknown> }> = [];
   const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
@@ -33,6 +33,7 @@ function server() {
       projectType: "services", packageManager: "npm", installCommand: "", buildCommand: "", buildImage: "node:22", outputDirectory: "", rootDirectory: "",
       services: [{ name: "web", image: "node:22", ports: [], dependsOn: [], environment: {}, volumes: [] }],
       configDiagnostics: { warnings: ["An optional setting was ignored"], errors: [] },
+      ...scanOverrides,
     });
     if (path === "/api/projects/ensure") return Response.json({ success: true, project_id: "project-a", created: false });
     if (path === "/api/deployments/build/access") return Response.json({ success: true, deployment_id: "dep-a", project_id: "project-a" });
@@ -45,6 +46,12 @@ function server() {
 }
 
 describe("SDK source deployments", () => {
+  it.each([{ releaseCommands: ["node migrate.js"] }, { releaseCommands: [] }])("preserves declared release commands when creating a project: %j", async ({ releaseCommands }) => {
+    const s = server({ releaseCommands });
+    await s.client.deploy({ source: { type: "files", files: { "index.js": "" } } });
+    expect(s.commands.find(command => command.path === "/api/projects/ensure")?.body.releaseCommands)
+      .toEqual(releaseCommands);
+  });
   it("removes generated source and its archive as soon as upload succeeds", async () => {
     const root = await directory();
     vi.stubEnv("TMPDIR", root);

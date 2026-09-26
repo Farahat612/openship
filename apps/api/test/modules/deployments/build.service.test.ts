@@ -573,11 +573,11 @@ describe("resolveSnapshotTarget", () => {
 describe("buildConfigSnapshot — release commands", () => {
   it("freezes the project's declared commands onto the snapshot", () => {
     const snapshot = buildConfigSnapshot(
-      baseProject({ releaseCommands: ["php artisan migrate --force", "php artisan optimize"] }) as any,
+      baseProject({ releaseCommands: ["php artisan migrate --force", "php artisan db:seed --force"] }) as any,
     );
     expect(snapshot.releaseCommands).toEqual([
       "php artisan migrate --force",
-      "php artisan optimize",
+      "php artisan db:seed --force",
     ]);
   });
 

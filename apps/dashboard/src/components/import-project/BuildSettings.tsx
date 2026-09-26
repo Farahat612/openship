@@ -552,6 +552,47 @@ const BuildSettings: React.FC<BuildSettingsProps> = ({
                   <p className="text-sm text-muted-foreground leading-tight">{workloadHint}</p>
                 </div>
                 {visibleStartFields.map(renderInput)}
+                {(workload !== "static" || config?.releaseCommands?.length > 0) && (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-foreground">{bs.releaseTitle}</p>
+                    <p className="text-sm text-muted-foreground">{bs.releaseDescription}</p>
+                    {(config?.releaseCommands ?? []).map((command: string, index: number) => (
+                      <div key={index} className="flex items-start gap-2">
+                        <textarea
+                          aria-label={interpolate(bs.releaseCommand, { number: String(index + 1) })}
+                          rows={1}
+                          maxLength={1000}
+                          value={command}
+                          spellCheck={false}
+                          onChange={(event) => updateConfig({
+                            releaseCommands: config.releaseCommands.map((value: string, at: number) =>
+                              at === index ? event.target.value : value),
+                          })}
+                          className="min-w-0 flex-1 resize-y rounded-lg bg-muted/50 px-3 py-2 font-mono text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                        />
+                        <button
+                          type="button"
+                          aria-label={interpolate(bs.removeReleaseCommand, { number: String(index + 1) })}
+                          onClick={() => updateConfig({
+                            releaseCommands: config.releaseCommands.filter((_: string, at: number) => at !== index),
+                          })}
+                          className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        >
+                          <UiIcon name="close" className="size-4" />
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      disabled={(config?.releaseCommands?.length ?? 0) >= 20}
+                      onClick={() => updateConfig({ releaseCommands: [...(config?.releaseCommands ?? []), ""] })}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-muted/50 px-3 py-2 text-sm text-foreground hover:bg-muted disabled:opacity-50"
+                    >
+                      <UiIcon name="plus" className="size-3.5" />
+                      {bs.addReleaseCommand}
+                    </button>
+                  </div>
+                )}
                 {renderEndpointTargetInputs()}
               </div>
             </div>

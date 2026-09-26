@@ -68,6 +68,7 @@ export interface ProjectOptionsBody {
   installCommand?: string;
   buildCommand?: string;
   startCommand?: string;
+  releaseCommands?: string[] | null;
   outputDirectory?: string;
   productionPaths?: string;
   /** Persistent mounts. `null` clears the override and restores the framework's
@@ -147,6 +148,7 @@ export interface ScanProjectResponse {
   installCommand: PrepareProjectResponse["installCommand"];
   buildCommand: PrepareProjectResponse["buildCommand"];
   startCommand: PrepareProjectResponse["startCommand"];
+  releaseCommands?: PrepareProjectResponse["releaseCommands"];
   buildImage: PrepareProjectResponse["buildImage"];
   outputDirectory: PrepareProjectResponse["outputDirectory"];
   rootDirectory: PrepareProjectResponse["rootDirectory"];
@@ -311,6 +313,8 @@ export const projectsApi = {
      * does no post-start waiting. Opaque passthrough to the project column.
      */
     readiness?: OpenshipReadiness | null;
+    /** Ordered commands required before activating a single-app release. */
+    releaseCommands?: string[] | null;
   }) => api.post<any>(endpoints.projects.ensure, body),
 
   /** List local projects only */

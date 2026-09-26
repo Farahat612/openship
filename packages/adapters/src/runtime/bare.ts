@@ -17,6 +17,7 @@
  *   "local"  → clone + build on the API host, then transfer output to target
  */
 
+import { randomUUID } from "node:crypto";
 import type {
   BuildConfig,
   CommandExecutor,
@@ -33,11 +34,12 @@ import type {
 import { LocalExecutor, wrapLocalBuildCommand } from "../system/executor";
 import { ensureOwnedDir } from "../system/elevated-executor";
 import { execReliable } from "../system/remote-journal";
-import { SYSTEM, STACKS, appVolumeTargets, buildOutputTransferExcludes, safeErrorMessage, missingOutputDirectoryMessage, packageManagerEnsureCommand, nodeBinPathExport, type StackId, type StackDefinition } from "@repo/core";
+import { STACKS, appVolumeTargets, buildOutputTransferExcludes, safeErrorMessage, missingOutputDirectoryMessage, packageManagerEnsureCommand, nodeBinPathExport, withTimeout, type StackId, type StackDefinition } from "@repo/core";
 import { checkToolchainForStack, installTools } from "../toolchain";
 import type {
   RuntimeAdapter,
   RuntimeCapability,
+  ReleaseCommandOptions,
   DeploymentRef,
   RollbackInput,
   MakeActiveResult,
@@ -60,6 +62,7 @@ import type { ProcessSupervisor } from "./supervisor/types";
 import { detectSupervisor } from "./supervisor/detect";
 import { probeListeningPort } from "./port-conflict";
 import { splitRuntimeEnv, droppedRuntimeEnvMessage } from "./runtime-env";
+import { releaseCommandDeadline } from "./release-command-deadline";
 
 /** Parent of a POSIX path on the TARGET machine — node:path would resolve
  *  against the local platform's separator, which is wrong over SSH from Windows. */
@@ -242,6 +245,10 @@ export class BareRuntime implements RuntimeAdapter {
     return `${this.workDir}/releases/${deploymentId}`;
   }
 
+  private isRetainedArtifact(path: string): boolean {
+    return path.startsWith(`${this.workDir}/releases/`);
+  }
+
   /** Per-project directory holding the paths that must survive a release swap.
    *  The `shared/` half of the Capistrano layout `releases/` already implements. */
   private sharedDir(projectId: string): string {
@@ -267,12 +274,15 @@ export class BareRuntime implements RuntimeAdapter {
     projectId: string,
     volumes: string[] | undefined,
     log?: LogCallback,
+    strict = false,
+    signal?: AbortSignal,
   ): Promise<void> {
     const targets = appVolumeTargets(volumes ?? []);
     if (targets.length === 0) return;
 
     const shared = this.sharedDir(projectId);
     for (const relative of targets) {
+      signal?.throwIfAborted();
       const sharedPath = `${shared}/${relative}`;
       const releasePath = `${releaseDir}/${relative}`;
       try {
@@ -284,6 +294,7 @@ export class BareRuntime implements RuntimeAdapter {
             await this.executor.mkdir(sharedPath);
           }
         }
+        signal?.throwIfAborted();
         await this.executor.rm(releasePath);
         await this.executor.mkdir(parentPath(releasePath));
         // -n so a pre-existing symlink is replaced rather than followed into
@@ -295,6 +306,8 @@ export class BareRuntime implements RuntimeAdapter {
           level: "info",
         });
       } catch (err) {
+        signal?.throwIfAborted();
+        if (strict) throw new Error(`Could not persist ${relative}: ${safeErrorMessage(err)}`);
         log?.({
           timestamp: new Date().toISOString(),
           message: `Could not persist ${relative}: ${safeErrorMessage(err)}\n`,
@@ -331,7 +344,7 @@ export class BareRuntime implements RuntimeAdapter {
      * The same path fires on a scoped compose deploy that carries an untargeted
      * static sub-app forward.
      */
-    const consumeSource = !artifactPath.startsWith(`${this.workDir}/releases/`);
+    const consumeSource = !this.isRetainedArtifact(artifactPath);
 
     await ensureOwnedDir(this.executor, `${this.workDir}/releases`);
     await this.executor.rm(releaseDir);
@@ -782,22 +795,24 @@ export class BareRuntime implements RuntimeAdapter {
    * exported — the closest match available to what `ExecStart=/bin/sh -lc` gives
    * the start command.
    *
-   * One difference worth knowing: `linkPersistentPaths` has not run yet, so a
-   * path that will become a symlink into `shared/` (Laravel's `storage/`) is
-   * still a plain directory here. A command that MIGRATES A DATABASE is
-   * unaffected; one that writes files it expects to survive the release swap
-   * (an SQLite file under `storage/`) would write into the release copy that
-   * `shared/` is about to be seeded FROM on a first deploy, and into the release
-   * copy alone on later ones.
+   * Persistent paths are attached before execution, using the same helper as
+   * deploy. A storage failure must stop the command before it migrates a copy
+   * that would be discarded when the real shared path is attached later.
    */
   async runReleaseCommand(
     config: DeployConfig,
     command: string,
     onLog: LogCallback,
-    opts?: { timeoutMs?: number },
+    opts?: ReleaseCommandOptions,
   ): Promise<void> {
-    const workDir = config.imageRef ?? this.projectDir(config.projectId);
-    const timeoutMs = opts?.timeoutMs ?? SYSTEM.DEPLOYMENTS.RELEASE_COMMAND_TIMEOUT_MS;
+    const artifactPath = config.imageRef;
+    if (!artifactPath) throw new Error("Release commands require a staged build artifact");
+    // A forward deploy may reuse the active release for an environment refresh.
+    // Never run against its live files (or hard-link them into the scratch copy).
+    const temporaryCopy = this.isRetainedArtifact(artifactPath);
+    const workDir = temporaryCopy
+      ? this.buildDir(`${config.buildSessionId}-release-${randomUUID()}`)
+      : artifactPath;
 
     // The start command's env, from the same function deploy uses. Logged here
     // too: this phase runs, and can fail, before deploy ever gets to say it.
@@ -825,32 +840,54 @@ export class BareRuntime implements RuntimeAdapter {
     // Login-shell wrap for a LOCAL target only — same rule buildOnTarget applies,
     // and the reason a version-managed toolchain (nvm, rbenv) is on PATH at all.
     const effective = this.executor instanceof LocalExecutor ? wrapLocalBuildCommand(full) : full;
+    const deadline = releaseCommandDeadline(opts);
+    let execution: Promise<{ code: number; output: string }> | undefined;
+    const execute = (shellCommand: string) => deadline.wait(() => {
+      execution = this.executor instanceof LocalExecutor
+        ? this.executor.streamExec(shellCommand, onLog, { signal: deadline.signal, killProcessTree: true })
+        : this.executor.streamExec(shellCommand, onLog, { signal: deadline.signal });
+      return execution;
+    });
 
-    const abort = new AbortController();
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      abort.abort();
-    }, timeoutMs);
-    let result: { code: number; output: string };
     try {
-      result = await this.executor.streamExec(effective, onLog, { signal: abort.signal });
+      deadline.signal.throwIfAborted();
+      // Scope remote filesystem work to the same deadline as execution, and
+      // await preparation to settle before acknowledging cancellation.
+      const prepare = async () => {
+        if (temporaryCopy) {
+          await this.executor.mkdir(workDir);
+          const copy = await execute(`cd ${sq(workDir)} && cp -a ${sq(artifactPath)}/. .`);
+          if (copy.code !== 0) throw new Error(`Could not stage retained release: ${copy.output.trim().slice(-1000)}`);
+        }
+        await this.linkPersistentPaths(
+          workDir, config.projectId, config.volumes, onLog, true, deadline.signal,
+        );
+      };
+      if (this.executor.runWithAbortSignal) await this.executor.runWithAbortSignal(deadline.signal, prepare);
+      else await prepare();
+      const result = await execute(effective);
+      deadline.signal.throwIfAborted();
+      if (result.code !== 0) {
+        const tail = result.output.trim().slice(-1000);
+        throw new Error(`Release command failed with exit code ${result.code}${tail ? `\n${tail}` : ""}`);
+      }
     } finally {
-      clearTimeout(timer);
-    }
-
-    // Checked BEFORE the exit code: an aborted child's code is whatever the kill
-    // produced, and reporting that as the failure would hide the real cause.
-    if (timedOut) {
-      throw new Error(
-        `Release command timed out after ${Math.round(timeoutMs / 1000)}s: ${command}`,
-      );
-    }
-    if (result.code !== 0) {
-      const tail = result.output.trim().slice(-1000);
-      throw new Error(
-        `Release command failed with exit code ${result.code}: ${command}${tail ? `\n${tail}` : ""}`,
-      );
+      deadline.dispose();
+      if (deadline.signal.aborted && execution) {
+        const cleanup: Promise<unknown> = this.executor instanceof LocalExecutor
+          ? execution
+          : Promise.all([killProcessesUnderDir(this.executor, workDir), execution]);
+        await withTimeout(cleanup, 5_000,
+          "Release command cleanup could not be confirmed").catch(error => onLog({
+          timestamp: new Date().toISOString(), level: "warn", message: `${safeErrorMessage(error)}\n`,
+        }));
+      }
+      if (temporaryCopy) {
+        await withTimeout(removeManagedArtifact(this.executor, workDir, this.workDir), 5_000,
+          "Release scratch directory cleanup could not be confirmed").catch(error => onLog({
+          timestamp: new Date().toISOString(), level: "warn", message: `${safeErrorMessage(error)}\n`,
+        }));
+      }
     }
   }
 

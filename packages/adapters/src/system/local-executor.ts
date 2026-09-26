@@ -50,7 +50,7 @@ export class LocalExecutor implements CommandExecutor {
   streamExec(
     command: string,
     onLog: (log: LogEntry) => void,
-    opts?: { signal?: AbortSignal },
+    opts?: { signal?: AbortSignal; killProcessTree?: boolean },
   ): Promise<{ code: number; output: string }> {
     return new Promise((resolve) => {
       // Already told to stop before we even spawned (a stream torn down immediately).
@@ -59,9 +59,11 @@ export class LocalExecutor implements CommandExecutor {
         return;
       }
 
+      const killProcessTree = opts?.killProcessTree === true && process.platform !== "win32";
       const child = spawn(getLocalShellPath(), getLocalShellArgs(command), {
         stdio: ["ignore", "pipe", "pipe"],
         env: getLocalExecEnv(),
+        detached: killProcessTree,
       });
 
       // Raw passthrough: forward the untouched byte stream (rawData = base64)
@@ -90,15 +92,29 @@ export class LocalExecutor implements CommandExecutor {
       // transport only ends on the edge closing or on this kill; without it a torn-down
       // browser stream leaves the curl draining the edge's shared queue.
       const signal = opts?.signal;
-      const onAbort = () => {
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+      const kill = (sig: NodeJS.Signals) => {
         try {
-          child.kill("SIGTERM");
-        } catch {
-          /* already gone */
+          if (killProcessTree && child.pid) process.kill(-child.pid, sig);
+          else child.kill(sig);
+        } catch { /* process already exited */ }
+      };
+      const onAbort = () => {
+        kill("SIGTERM");
+        if (killProcessTree) {
+          killTimer = setTimeout(() => kill("SIGKILL"), 1_000);
+          killTimer.unref?.();
         }
       };
       signal?.addEventListener("abort", onAbort, { once: true });
-      const cleanup = () => signal?.removeEventListener("abort", onAbort);
+      if (signal?.aborted) onAbort();
+      const cleanup = () => {
+        signal?.removeEventListener("abort", onAbort);
+        if (killTimer) clearTimeout(killTimer);
+        // The shell can exit before a grandchild that redirected its stdio.
+        // Reap the remaining group before reporting cancellation complete.
+        if (signal?.aborted && killProcessTree) kill("SIGKILL");
+      };
 
       child.stdout.on("data", (data: Buffer) => onChunk(data, "info"));
       child.stderr.on("data", (data: Buffer) => onChunk(data, "warn"));

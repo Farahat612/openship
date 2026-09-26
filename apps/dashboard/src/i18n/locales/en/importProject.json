@@ -106,7 +106,12 @@
     "modeWorker": "Worker",
     "modeStatic": "Static",
     "workerModeDesc": "Runs continuously with no port or public URL — a queue consumer, cron, or bot.",
-    "buildSettingsTitle": "Build Settings"
+    "buildSettingsTitle": "Build Settings",
+    "releaseTitle": "Before activation",
+    "releaseDescription": "Optional commands after build. Failure stops deployment. Docker and Bare apps only.",
+    "releaseCommand": "Command {number}",
+    "addReleaseCommand": "Add command",
+    "removeReleaseCommand": "Remove command {number}"
   },
   "projectSettings": {
     "framework": "Framework",

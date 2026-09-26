@@ -462,6 +462,8 @@ export interface DeploymentConfig {
    * and nothing post-start can delay or veto it.
    */
   readiness?: OpenshipReadiness | null;
+  /** Ordered commands required before activating a single-app release. */
+  releaseCommands?: string[] | null;
   /**
    * What the scan's openship.json parse refused (#641). NOT a user setting — it's
    * a fresh observation of the repo, so it is never hydrated from the saved

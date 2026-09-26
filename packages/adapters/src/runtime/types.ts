@@ -136,8 +136,8 @@ export type RuntimeCapability =
    * Runtime can run a one-off RELEASE COMMAND against a freshly-built artifact,
    * between the build and the cutover — `runReleaseCommand`. Docker runs it in a
    * throwaway container off the new image; Bare runs it in the staged release
-   * directory. Cloud has no such primitive, so a project that declares release
-   * commands gets a logged skip there rather than a silently-unrun migration.
+   * directory. A runtime without this capability must refuse a deployment that
+   * requires release commands.
    */
   | "releaseCommand"
   /**
@@ -186,6 +186,13 @@ export interface ContainerLifecycleEvent {
 }
 
 // ─── Interface ───────────────────────────────────────────────────────────────
+
+export interface ReleaseCommandOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  /** Attach the candidate's service networks before its command can execute. */
+  beforeStart?: (containerId: string) => Promise<void>;
+}
 
 export interface RuntimeAdapter {
   /** Human-readable name of the runtime */
@@ -247,7 +254,7 @@ export interface RuntimeAdapter {
     config: DeployConfig,
     command: string,
     onLog: LogCallback,
-    opts?: { timeoutMs?: number },
+    opts?: ReleaseCommandOptions,
   ): Promise<void>;
 
   /** Stop a running container/process (preserves state) */
@@ -375,7 +382,7 @@ export interface RuntimeAdapter {
     /** Containers to include BEYOND the `openship.project` label match — an adopted
      *  container keeps its original labels, so the filter cannot see it. */
     extraContainerIds?: string[],
-    options?: { prunePrefix?: string; retain?: string[]; strict?: boolean },
+    options?: { prunePrefix?: string; retain?: string[]; strict?: boolean; onlyContainerIds?: string[] },
   ): Promise<void>;
 
   /**

@@ -63,6 +63,27 @@ describe("shared service Docker networking", () => {
     expect(own.disconnect).not.toHaveBeenCalled();
   });
 
+  it("attaches only the release candidate without reconciling the live app's networks", async () => {
+    const old = network("openship-shared-old", ["live-app"]);
+    const database = network("openship-shared-db", ["database"]);
+    const listContainers = vi.fn();
+    const getContainer = vi.fn((id: string) => ({ inspect: async () => ({
+      Id: id, HostConfig: { NetworkMode: "bridge" }, NetworkSettings: { Networks: {} },
+    }) }));
+    const runtime = runtimeWithDocker({
+      listContainers, getContainer,
+      getNetwork: (name: string) => name === "openship-shared-db" ? database : old,
+    });
+    await runtime.attachToExternalNetworks("app", ["openship-shared-db"], ["live-app"], {
+      onlyContainerIds: ["release"], prunePrefix: "openship-shared-", strict: true,
+    });
+    expect(listContainers).not.toHaveBeenCalled();
+    expect(getContainer).toHaveBeenCalledExactlyOnceWith("release");
+    expect([...database.members]).toEqual(["database", "release"]);
+    expect([...old.members]).toEqual(["live-app"]);
+    expect(old.disconnect).not.toHaveBeenCalled();
+  });
+
   it("reports an unreachable daemon when a private connection is required", async () => {
     const runtime = runtimeWithDocker({ listContainers: async () => { throw new Error("daemon unreachable"); } });
     await expect(runtime.attachToExternalNetworks("consumer", ["openship-shared-db"], [], { strict: true })).rejects.toThrow("daemon unreachable");

@@ -416,40 +416,24 @@ the JS asset stage also landed; the storage section below has what's left of tho
 Commands that run ONCE per deploy, after build and before cutover, failing the
 deploy on error.
 
-**Shipped (v1).** `openship.json` `releaseCommands` (a LIST — a framework's
-release set is several independent steps, each with its own log marker and its
-own attributable failure) → `project.release_commands` → frozen on the
-deployment snapshot → run in `executeServerDeploy`
-(`packages/platform/src/engine/modules/deployments/build-pipeline.ts`) right after `deployConfig`
-is assembled and before the first domain row or `runDeployPipeline`, so a failed
-migration leaves the previous version running and routed. Docker runs each
-command in a throwaway container off the new image (deploy env + volumes +
-project network, no published port, no restart policy); bare runs it in the
-staged release dir through a login shell. Ordering / fail-fast / skip live in
-`deployments/release-phase.ts`. Nothing is auto-injected per framework.
+**Implemented (v1).** Optional ordered `releaseCommands` are stored on the project,
+frozen on deployment snapshots, and run by the shared engine after the candidate build
+and before activation. Configure them in the existing build wizard, `openship.json`, or
+API/SDK. Nothing is injected per framework.
 
-- [ ] Per-framework commands are DOCUMENTED, not injected: Laravel
-      `migrate --force`, Rails `db:prepare` (bootstraps an empty database too),
-      Django `migrate --noinput`. Only effects outside the release container
-      survive it (the database, a mounted volume), so `optimize`, `storage:link`,
-      `reload` and `collectstatic` belong in the start command or the build, not
-      here. Auto-injection on detection is the open question.
-- [ ] No dashboard field yet — the phase is reachable through `openship.json`,
-      `POST /projects` and `POST /projects/:id/options` only.
-- [ ] Compose/services projects skip it with a logged warning: a release command
-      there would have to name a SERVICE to run in, which v1 doesn't model.
-      Openship Cloud skips it too (no one-off execution primitive), as do static
-      deploys (no runtime).
-- [ ] Bare runs the command BEFORE `linkPersistentPaths`, so a path that becomes a
-      `shared/` symlink is still a plain dir at release time. Migrating a DATABASE
-      is unaffected; a command that writes a file expected to survive the release
-      swap (a SQLite file under `storage/`) is not.
-- [ ] A rollback/redeploy replays the TARGET release's frozen commands. Fine for
-      idempotent migrations, an open question for anything else.
-- [ ] Not the same thing as `#206` deploy hooks: those are an inbound trigger that
-      STARTS a deploy; this runs DURING one.
-- [ ] `queue:work` and `schedule:run` are still unexpressible — they're roles, not
-      release steps. See multi-role stacks below.
+Docker uses temporary containers with the candidate image, shared runtime env/mount helpers,
+and connected-service networks. Bare links persistent paths before executing against the
+staged artifact. Failure, cancellation, or timeout prevents activation. Commands run
+outside the server's port-allocation lock, under the project's execution lease. Code
+rollbacks skip them and do not undo database changes; commands must be idempotent and
+compatible with the previous app.
+
+- [x] Shared configuration through source scans, native/HTTP SDK, and dashboard.
+- [x] Runtime and pipeline behavior tests, including failure/cancellation cleanup.
+- [x] Real Docker release tests in the release-gated E2E suite.
+- [x] Unsupported runtimes and full multi-service/static deployments fail before activation.
+- [ ] Per-service release commands for Compose/monorepo deployments.
+- [ ] Worker/scheduler roles remain separate from one-off release commands.
 
 ### Multi-role stacks
 

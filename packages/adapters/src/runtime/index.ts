@@ -9,6 +9,7 @@
 export type {
   RuntimeAdapter,
   RuntimeCapability,
+  ReleaseCommandOptions,
   MultiServiceRuntimeAdapter,
   MultiServiceGroupHandle,
   MultiServiceDeployConfig,

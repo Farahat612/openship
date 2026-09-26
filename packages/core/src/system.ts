@@ -72,7 +72,7 @@ export const SYSTEM = {
     /** Readiness-probe poll interval. */
     READINESS_INTERVAL_MS: 1_000,
     /**
-     * Per-command budget for the release phase (migrations, cache warms) that
+     * Per-command budget for the release phase (for example, migrations) that
      * runs between build and cutover. Same 10 minutes a bare build step gets
      * (BareRuntimeOptions.buildTimeout) — a migration is build-shaped work, and
      * an unbounded one would hold the deploy open forever with the old version

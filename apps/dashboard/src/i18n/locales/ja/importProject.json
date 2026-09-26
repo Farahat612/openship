@@ -105,7 +105,12 @@
     "modeWorker": "ワーカー",
     "modeStatic": "静的",
     "workerModeDesc": "ポートや公開URLを持たず継続的に実行 — キューコンシューマー、cron、ボットなど。",
-    "buildSettingsTitle": "ビルド設定"
+    "buildSettingsTitle": "ビルド設定",
+    "releaseTitle": "有効化前",
+    "releaseDescription": "ビルド後に実行する任意のコマンドです。失敗するとデプロイを停止します。Docker・Bareアプリのみ対応。",
+    "releaseCommand": "コマンド {number}",
+    "addReleaseCommand": "コマンドを追加",
+    "removeReleaseCommand": "コマンド {number} を削除"
   },
   "projectSettings": {
     "framework": "フレームワーク",

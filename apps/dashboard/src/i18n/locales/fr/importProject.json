@@ -106,7 +106,12 @@
     "modeStatic": "Statique",
     "workerModeDesc": "S'exécute en continu sans port ni URL publique — un consommateur de file, une tâche cron ou un bot.",
     "staticPathHint": "Servi en tant que fichiers statiques depuis l'edge — aucun processus ne s'exécute.",
-    "buildSettingsTitle": "Paramètres de compilation"
+    "buildSettingsTitle": "Paramètres de compilation",
+    "releaseTitle": "Avant activation",
+    "releaseDescription": "Commandes facultatives après le build. Un échec arrête le déploiement. Applications Docker et Bare uniquement.",
+    "releaseCommand": "Commande {number}",
+    "addReleaseCommand": "Ajouter une commande",
+    "removeReleaseCommand": "Supprimer la commande {number}"
   },
   "projectSettings": {
     "framework": "Framework",

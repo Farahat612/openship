@@ -50,6 +50,7 @@ export function createProjectLocalDependencies(create: (ctx: ExecutionContext, i
       rootDirectory: body.rootDirectory ?? info.rootDirectory,
       composePath: body.composePath ?? info.composePath,
       startCommand: body.startCommand ?? info.startCommand,
+      releaseCommands: body.releaseCommands !== undefined ? body.releaseCommands : info.releaseCommands,
       buildImage: body.buildImage ?? info.buildImage,
       productionMode: body.productionMode ?? info.productionMode,
       workloadType: body.workloadType ?? info.workloadType,

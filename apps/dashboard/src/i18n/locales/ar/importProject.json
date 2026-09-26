@@ -106,7 +106,12 @@
     "modeStatic": "ثابت",
     "workerModeDesc": "يعمل باستمرار بدون منفذ أو رابط عام — مستهلك طابور أو مهمة مجدولة أو روبوت.",
     "staticPathHint": "يُقدَّم كملفات ثابتة من الحافة — لا تعمل أي عملية.",
-    "buildSettingsTitle": "إعدادات البناء"
+    "buildSettingsTitle": "إعدادات البناء",
+    "releaseTitle": "قبل التفعيل",
+    "releaseDescription": "أوامر اختيارية بعد البناء. فشلها يوقف النشر. لتطبيقات Docker وBare فقط.",
+    "releaseCommand": "الأمر {number}",
+    "addReleaseCommand": "إضافة أمر",
+    "removeReleaseCommand": "حذف الأمر {number}"
   },
   "projectSettings": {
     "framework": "إطار العمل",

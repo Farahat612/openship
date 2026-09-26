@@ -871,6 +871,11 @@ export function useDeploymentConfig() {
           readiness: projectId
             ? (project?.readiness ?? undefined)
             : (response.readiness ?? undefined),
+          // A saved empty list is an explicit opt-out; a rescan must not enable
+          // database-changing commands that the operator already disabled.
+          releaseCommands: projectId
+            ? (project?.releaseCommands ?? undefined)
+            : (response.releaseCommands ?? undefined),
           // Deliberately NOT projectId-gated like readiness/framework: this is what
           // the scan just observed in the repo, not a value the operator owns, so a
           // config edit on an existing project must show the file's CURRENT state.
@@ -1030,6 +1035,7 @@ export function useDeploymentConfig() {
                     name: project?.name,
                     runtimeMode: project?.runtimeMode,
                     readiness: project?.readiness,
+                    releaseCommands: project?.releaseCommands,
                     routingConfig: project?.routingConfig,
                   }
                 : project,
@@ -1131,6 +1137,9 @@ export function useDeploymentConfig() {
             runtimeMode: requiresDocker ? "docker" : prev.runtimeMode,
             buildStrategy: requiresDocker ? "server" : prev.buildStrategy,
             readiness: prev.readiness,
+            releaseCommands: prev.releaseCommands !== undefined || prev.projectId
+              ? prev.releaseCommands
+              : prepared.releaseCommands,
             routingConfig: prev.routingConfig,
             cloudResourceTier: prev.cloudResourceTier,
             cloudResourceCustom: prev.cloudResourceCustom,
@@ -1305,10 +1314,12 @@ export function useDeploymentConfig() {
           }
         }
 
-        // The upload wizard has the user pick the stack up front (like the
-        // template list), so we seed the config from that stack's defaults —
-        // no auto-detection. `scan` is only used as a fallback (e.g. an MCP/
-        // programmatic caller that didn't pick a stack).
+        // Always read declared release commands, even when the operator chose
+        // the stack. Stack selection still owns the build defaults below.
+        const scan = await folderApi.scan(sessionId, { includeEnv: true });
+        if ((scan as { error?: string })?.error) {
+          return { success: false, error: (scan as { error?: string }).error, errorType: "api_error" };
+        }
         let response: PrepareProjectResponse;
         let name: string;
 
@@ -1333,6 +1344,8 @@ export function useDeploymentConfig() {
             installCommand: "",
             buildCommand: stackDef.defaultBuildCommand ?? "",
             startCommand: stackDef.defaultStartCommand ?? "",
+            releaseCommands: scan.releaseCommands,
+            configDiagnostics: scan.configDiagnostics,
             buildImage: getBuildImage(context.stack as StackId, pm),
             outputDirectory: stackDef.outputDirectory ?? "",
             rootDirectory: "",
@@ -1341,14 +1354,6 @@ export function useDeploymentConfig() {
             services: undefined,
           } as unknown as PrepareProjectResponse;
         } else {
-          const scan = await folderApi.scan(sessionId, { includeEnv: true });
-          if ((scan as { error?: string })?.error) {
-            return {
-              success: false,
-              error: (scan as { error?: string }).error,
-              errorType: "api_error",
-            };
-          }
           name = scan.name || context?.name || "app";
           // Adapt the flat scan result into the prepare-shaped response the
           // shared config builder consumes.
@@ -1367,6 +1372,7 @@ export function useDeploymentConfig() {
             installCommand: scan.installCommand,
             buildCommand: scan.buildCommand,
             startCommand: scan.startCommand,
+            releaseCommands: scan.releaseCommands,
             buildImage: scan.buildImage,
             outputDirectory: scan.outputDirectory,
             rootDirectory: scan.rootDirectory,
@@ -1484,6 +1490,7 @@ export function useDeploymentConfig() {
             return {
               ...prev,
               projectId,
+              releaseCommands: project.releaseCommands ?? undefined,
               // The successful env read is authoritative even when empty. Keeping
               // stale rows here would turn a later save into unintended upserts.
               envVars: envState.rows,

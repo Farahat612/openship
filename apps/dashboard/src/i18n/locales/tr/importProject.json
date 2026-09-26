@@ -106,7 +106,12 @@
     "modeStatic": "Statik",
     "workerModeDesc": "Bağlantı noktası veya genel URL olmadan sürekli çalışır — bir kuyruk tüketicisi, cron veya bot.",
     "staticPathHint": "Edge üzerinden statik dosyalar olarak sunulur — hiçbir işlem çalışmaz.",
-    "buildSettingsTitle": "Derleme Ayarları"
+    "buildSettingsTitle": "Derleme Ayarları",
+    "releaseTitle": "Etkinleştirmeden önce",
+    "releaseDescription": "Derleme sonrası isteğe bağlı komutlar. Hata dağıtımı durdurur. Yalnızca Docker ve Bare uygulamaları.",
+    "releaseCommand": "Komut {number}",
+    "addReleaseCommand": "Komut ekle",
+    "removeReleaseCommand": "{number}. komutu kaldır"
   },
   "projectSettings": {
     "framework": "Framework",

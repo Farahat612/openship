@@ -105,7 +105,12 @@
     "modeWorker": "Worker",
     "modeStatic": "Estático",
     "workerModeDesc": "Se ejecuta de forma continua sin puerto ni URL pública: un consumidor de cola, cron o bot.",
-    "buildSettingsTitle": "Configuración de compilación"
+    "buildSettingsTitle": "Configuración de compilación",
+    "releaseTitle": "Antes de activar",
+    "releaseDescription": "Comandos opcionales después del build. Un fallo detiene el despliegue. Solo para apps Docker y Bare.",
+    "releaseCommand": "Comando {number}",
+    "addReleaseCommand": "Añadir comando",
+    "removeReleaseCommand": "Eliminar comando {number}"
   },
   "projectSettings": {
     "framework": "Framework",

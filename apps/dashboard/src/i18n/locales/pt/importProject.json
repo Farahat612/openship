@@ -105,7 +105,12 @@
     "modeWorker": "Worker",
     "modeStatic": "Estático",
     "workerModeDesc": "Executa continuamente sem porta nem URL pública — um consumidor de fila, cron ou bot.",
-    "buildSettingsTitle": "Configurações de Build"
+    "buildSettingsTitle": "Configurações de Build",
+    "releaseTitle": "Antes da ativação",
+    "releaseDescription": "Comandos opcionais após o build. Uma falha interrompe a implantação. Apenas apps Docker e Bare.",
+    "releaseCommand": "Comando {number}",
+    "addReleaseCommand": "Adicionar comando",
+    "removeReleaseCommand": "Remover comando {number}"
   },
   "projectSettings": {
     "framework": "Framework",

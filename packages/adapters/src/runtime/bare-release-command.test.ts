@@ -1,5 +1,10 @@
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { BareRuntime } from "./bare";
+import { sq } from "./build-pipeline";
+import { LocalExecutor } from "../system/local-executor";
 import type { CommandExecutor, DeployConfig } from "../types";
 
 /**
@@ -44,6 +49,89 @@ function config(overrides: Partial<DeployConfig> = {}): DeployConfig {
 }
 
 describe("BareRuntime.runReleaseCommand", () => {
+  it("migrates the shared persistent data on successive releases", async () => {
+    const workDir = await mkdtemp(join(tmpdir(), "openship-release-data-"));
+    try {
+      const runtime = new BareRuntime({ workDir, executor: new LocalExecutor() });
+      for (const release of ["first", "second"]) {
+        const imageRef = join(workDir, ".builds", release);
+        await mkdir(join(imageRef, "storage"), { recursive: true });
+        await writeFile(join(imageRef, "storage", "schema"), "seed");
+        await runtime.runReleaseCommand(
+          config({ imageRef, volumes: ["storage:/app/storage"] }),
+          "printf ':migrated' >> storage/schema",
+          () => {},
+        );
+      }
+      expect(await readFile(join(workDir, "shared", "proj_1", "storage", "schema"), "utf8"))
+        .toBe("seed:migrated:migrated");
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([0, 1])("never modifies a retained release's application files, even on exit %i", async exitCode => {
+    const workDir = await mkdtemp(join(tmpdir(), "openship-release-retained-"));
+    try {
+      const imageRef = join(workDir, "releases", "live");
+      const storage = join(workDir, "shared", "proj_1", "storage");
+      await mkdir(imageRef, { recursive: true });
+      await mkdir(storage, { recursive: true });
+      await symlink(storage, join(imageRef, "storage"));
+      await writeFile(join(storage, "schema"), "seed");
+      await writeFile(join(imageRef, "app.js"), "original app");
+      const result = new BareRuntime({ workDir, executor: new LocalExecutor() }).runReleaseCommand(
+        config({ imageRef, volumes: ["storage:/app/storage"] }),
+        `printf changed > app.js; printf ':migrated' >> storage/schema; exit ${exitCode}`, () => {},
+      );
+      if (exitCode) await expect(result).rejects.toThrow("exit code 1");
+      else await result;
+      expect(await readFile(join(imageRef, "app.js"), "utf8")).toBe("original app");
+      expect(await readFile(join(storage, "schema"), "utf8")).toBe("seed:migrated");
+      expect(await readdir(join(workDir, ".builds"))).toEqual([]);
+    } finally { await rm(workDir, { recursive: true, force: true }); }
+  });
+
+  it("does not execute against disposable data when persistence preparation fails", async () => {
+    const { executor } = makeExecutor({ code: 0, output: "" });
+    vi.mocked(executor.mkdir).mockRejectedValueOnce(new Error("Permission denied"));
+    await expect(new BareRuntime({ executor }).runReleaseCommand(
+      config({ volumes: ["storage:/app/storage"] }), "migrate", () => {},
+    )).rejects.toThrow(/Could not persist storage.*Permission denied/);
+    expect(executor.streamExec).not.toHaveBeenCalled();
+  });
+
+  it("refuses to run without the candidate artifact", async () => {
+    const { executor } = makeExecutor({ code: 0, output: "" });
+    await expect(new BareRuntime({ executor }).runReleaseCommand(
+      config({ imageRef: undefined }), "migrate", () => {},
+    )).rejects.toThrow(/staged build artifact/);
+    expect(executor.streamExec).not.toHaveBeenCalled();
+  });
+
+  it("reaps a local grandchild before acknowledging cancellation", async () => {
+    const workDir = await mkdtemp(join(tmpdir(), "openship-release-cancel-"));
+    const abort = new AbortController();
+    let pid: number | undefined;
+    try {
+      const pidFile = join(workDir, "child.pid");
+      const script = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
+        "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+      const command = `${sq(process.execPath)} -e ${sq(script)} > /dev/null 2>&1 & ` +
+        `while [ ! -f ${sq(pidFile)} ]; do sleep 0.01; done; printf ready; wait`;
+      await expect(new BareRuntime({ workDir, executor: new LocalExecutor() }).runReleaseCommand(
+        config({ imageRef: workDir }), command,
+        entry => { if (entry.message.includes("ready")) abort.abort(new Error("User cancelled")); },
+        { signal: abort.signal, timeoutMs: 5_000 },
+      )).rejects.toThrow("User cancelled");
+      pid = Number(await readFile(pidFile, "utf8"));
+      await vi.waitFor(() => expect(() => process.kill(pid!, 0)).toThrow(), { timeout: 2_000 });
+    } finally {
+      if (pid) { try { process.kill(pid, "SIGKILL"); } catch {} }
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+
   // Same env as the supervised app, by construction (bareProcessEnv). On bare a
   // project PATH is worse than on docker: `export PATH=…` REPLACES the base, so
   // even `/usr/bin/env node` stops resolving.

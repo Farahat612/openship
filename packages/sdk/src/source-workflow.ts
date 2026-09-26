@@ -18,6 +18,7 @@ export async function deploySourceWorkflow(ship: { projects: ProjectOperations; 
     gitProvider: "upload", uploadSessionId: session.sessionId,
     framework: scan.stack, projectType: scan.projectType, packageManager: scan.packageManager,
     installCommand: scan.installCommand, buildCommand: scan.buildCommand, startCommand: scan.startCommand || undefined,
+    releaseCommands: scan.releaseCommands,
     outputDirectory: scan.outputDirectory, rootDirectory: scan.rootDirectory, buildImage: scan.buildImage,
     productionPaths: Array.isArray(scan.productionPaths) ? scan.productionPaths.join(",") : undefined,
     hasBuild, hasServer, productionMode: scan.productionMode ?? (hasServer ? "standalone" : "static"),

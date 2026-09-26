@@ -36,14 +36,12 @@ export function resolveReleaseCommands(declared: string[] | null | undefined): s
  *
  * `run` is injected — it's `runtime.runReleaseCommand` bound to the deploy
  * config at the call site — so the ordering, the log markers, the fail-fast and
- * the unsupported-runtime skip are all testable without a runtime, a container
+ * unsupported-runtime failure are all testable without a runtime, a container
  * or a daemon.
  *
  * Returns nothing and throws on the first failure: the caller turns that into a
- * failed deployment. `run: undefined` means the runtime has no such primitive
- * (cloud) — the phase then logs a warning naming what it skipped and returns,
- * because refusing the deploy outright would break every existing cloud project
- * the moment someone added a release command for their self-hosted target.
+ * failed deployment. A declared release command is a required precondition:
+ * an unsupported runtime must fail rather than activate unprepared code.
  *
  * `deliberateSkipReason` is the other kind of skip: the commands COULD run here
  * and are deliberately not run (a rollback replaying an older release's
@@ -54,18 +52,19 @@ export async function runReleasePhase(opts: {
   commands: string[];
   /** Runs ONE command; rejects with the command's output on a non-zero exit. */
   run?: (command: string) => Promise<void>;
-  /** Why `run` is missing — logged so a skipped migration is never silent. */
+  /** Why `run` is missing — the deployment fails with this explanation. */
   unsupportedReason?: string;
   /**
    * Set when the phase is skipped BY DESIGN rather than for want of a runtime
-   * primitive. Kept separate from `unsupportedReason` because the two need
-   * opposite advice: an unsupported runtime tells the operator to run the
-   * commands by hand, whereas a deliberate skip means they should NOT be run.
+   * primitive. Rollbacks and explicitly scoped service actions do not replay
+   * project-level migrations; unsupported forward deployments fail instead.
    */
   deliberateSkipReason?: string;
+  signal?: AbortSignal;
   log: (message: string, level?: "info" | "warn" | "error") => void;
 }): Promise<void> {
-  const { commands, run, unsupportedReason, deliberateSkipReason, log } = opts;
+  const { commands, run, unsupportedReason, deliberateSkipReason, signal, log } = opts;
+  signal?.throwIfAborted();
   if (commands.length === 0) return;
 
   // Ordered before the `run` check on purpose: a deliberate skip is a decision
@@ -80,13 +79,10 @@ export async function runReleasePhase(opts: {
   }
 
   if (!run) {
-    log(
-      `${unsupportedReason ?? "This runtime cannot run release commands"} — skipping ` +
-        `${commands.length} release command${commands.length === 1 ? "" : "s"}: ` +
-        `${commands.join(", ")}. Run them by hand before this version serves traffic.`,
-      "warn",
-    );
-    return;
+    const message = `${unsupportedReason ?? "This runtime cannot run release commands"}. ` +
+      "Deployment stopped before activation. Use a supported runtime or remove the release commands.";
+    log(message, "error");
+    throw new Error(message);
   }
 
   log(
@@ -96,11 +92,14 @@ export async function runReleasePhase(opts: {
   );
 
   for (const [index, command] of commands.entries()) {
+    signal?.throwIfAborted();
     const marker = `[release ${index + 1}/${commands.length}]`;
     log(`${marker} $ ${command}`);
     try {
       await run(command);
+      signal?.throwIfAborted();
     } catch (err) {
+      signal?.throwIfAborted();
       const message = safeErrorMessage(err);
       log(`${marker} failed: ${message}`, "error");
       throw new Error(`Release command failed: ${command}\n${message}`);
@@ -113,3 +112,11 @@ export async function runReleasePhase(opts: {
 
 /** Per-command budget. Re-exported so the pipeline and its tests name one number. */
 export const RELEASE_COMMAND_TIMEOUT_MS = SYSTEM.DEPLOYMENTS.RELEASE_COMMAND_TIMEOUT_MS;
+
+/** Artifact reuse also happens during migration and environment refresh, so only
+ * the explicit trigger identifies a rollback (including a rebuild from Git). */
+export function releasePhaseSkipReason(trigger: string, targetServiceIds?: string[]): string | undefined {
+  if (trigger === "rollback") return "Rollback: release commands are not replayed";
+  if (targetServiceIds?.length) return "Only selected services are deploying; the main app's release commands are not replayed";
+  return undefined;
+}

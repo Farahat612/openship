@@ -276,13 +276,10 @@ describe("parseOpenshipConfig", () => {
   });
 
   describe("releaseCommands", () => {
-    // Laravel 13's canonical set — the case the release phase exists for.
     it("round-trips a list of commands in declared order", () => {
       const releaseCommands = [
         "php artisan migrate --force",
-        "php artisan optimize",
-        "php artisan storage:link",
-        "php artisan reload",
+        "php artisan db:seed --force",
       ];
       const { config, errors, warnings } = parseOpenshipConfig({ releaseCommands });
       expect(errors).toEqual([]);

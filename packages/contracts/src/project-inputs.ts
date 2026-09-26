@@ -400,8 +400,8 @@ export const CreateProjectBody = Type.Object({
   composePath: Type.Optional(Type.String({ maxLength: 300 })),
   startCommand: Type.Optional(Type.String({ maxLength: 500 })),
   /**
-   * Commands run ONCE per deploy, between the build and the cutover — migrations,
-   * cache warms. A non-zero exit fails the deploy. Omit to keep the current value;
+   * Commands run once per forward deploy, between the build and the cutover.
+   * A non-zero exit fails the deploy. Omit to keep the current value;
    * send `[]` (or null) to turn the release phase off. Mirrors `openship.json`'s
    * `releaseCommands`.
    */
@@ -693,9 +693,7 @@ export const SetOptionsBody = Type.Object(
     composePath: Type.Optional(Type.Union([Type.String({ maxLength: 300 }), Type.Null()])),
     startCommand: Type.Optional(Type.String()),
     /** Deploy-time release commands; `null`/`[]` turns the release phase off. */
-    releaseCommands: Type.Optional(
-      Type.Union([Type.Array(Type.String({ maxLength: 1000 }), { maxItems: 20 }), Type.Null()]),
-    ),
+    releaseCommands: EnsureProjectBody.properties.releaseCommands,
     productionPort: Type.Optional(Type.Union([Type.Number(), Type.String()])),
     packageManager: Type.Optional(Type.String()),
     buildImage: Type.Optional(Type.String()),

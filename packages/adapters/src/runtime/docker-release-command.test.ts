@@ -1,5 +1,5 @@
 import { PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { DockerRuntime } from "./docker";
 import type { DeployConfig } from "../types";
@@ -16,32 +16,41 @@ import type { DeployConfig } from "../types";
  * pin), no restart policy (a command that exits non-zero must fail, not bounce),
  * and the container is removed either way.
  */
-function fakeDaemon(opts: { statusCode?: number; log?: string }) {
+function frame(text: string, type = 1): Buffer {
+  const payload = Buffer.from(text, "utf8");
+  const header = Buffer.alloc(8);
+  header[0] = type;
+  header.writeUInt32BE(payload.length, 4);
+  return Buffer.concat([header, payload]);
+}
+
+function fakeDaemon(opts: { statusCode?: number; log?: string; chunks?: Buffer[] } = {}) {
   const created: Array<Record<string, unknown>> = [];
   const removed: Array<Record<string, unknown> | undefined> = [];
   const stream = new PassThrough();
-  const docker = {
-    createContainer: async (args: Record<string, unknown>) => {
-      created.push(args);
-      return {
-        id: "release-container-1",
-        start: async () => {},
-        logs: async () => {
-          setImmediate(() => {
-            if (opts.log) stream.write(Buffer.from(opts.log, "utf8"));
-            stream.end();
-          });
-          return stream;
-        },
-        wait: async () => ({ StatusCode: opts.statusCode ?? 0 }),
-        stop: async () => {},
-        remove: async (o?: Record<string, unknown>) => {
-          removed.push(o);
-        },
-      };
-    },
+  const container = {
+    id: "release-container-1",
+    start: vi.fn(async (_args?: unknown) => {}),
+    logs: vi.fn(async (_args?: unknown) => {
+      setImmediate(() => {
+        for (const chunk of opts.chunks ?? [frame(opts.log ?? "")]) stream.write(chunk);
+        stream.end();
+      });
+      return stream;
+    }),
+    wait: vi.fn(async (_args?: unknown) => ({ StatusCode: opts.statusCode ?? 0 })),
+    remove: vi.fn(async (o?: Record<string, unknown>) => { removed.push(o); }),
   };
-  return { docker, created, removed };
+  const docker = {
+    createContainer: vi.fn(async (args: Record<string, unknown>) => {
+      created.push(args);
+      return container;
+    }),
+    getContainer: vi.fn((_id: string) => container),
+    listNetworks: vi.fn(async () => []),
+    createNetwork: vi.fn(async () => ({ id: "project-network" })),
+  };
+  return { docker, container, stream, created, removed };
 }
 
 function config(overrides: Partial<DeployConfig> = {}): DeployConfig {
@@ -121,6 +130,8 @@ describe("DockerRuntime.runReleaseCommand", () => {
     expect(created).toHaveLength(1);
     const args = created[0]!;
     expect(args.Image).toBe("openship/proj_1:dep_1");
+    expect(args.Labels).toMatchObject({ "openship.project": "proj_1", "openship.build": "bs_1" });
+    expect(args.Labels).not.toHaveProperty("openship.deployment");
     // Entrypoint override: a base image's docker-entrypoint.sh would swallow Cmd.
     expect(args.Entrypoint).toEqual(["/bin/sh", "-c"]);
     expect(args.Cmd).toEqual(["php artisan migrate --force"]);
@@ -136,6 +147,7 @@ describe("DockerRuntime.runReleaseCommand", () => {
     // Output reaches the deploy log, and the container doesn't leak.
     expect(lines.join("")).toContain("Migrating...");
     expect(removed).toHaveLength(1);
+    expect(removed[0]).toMatchObject({ force: true, v: true });
   });
 
   it("fails the deploy on a non-zero exit, with the command's output in the message", async () => {
@@ -148,6 +160,105 @@ describe("DockerRuntime.runReleaseCommand", () => {
     ).rejects.toThrow(/exit code 1[\s\S]*SQLSTATE\[42S02\]/);
     // Removed on the failure path too — a failed release must not leave a container.
     expect(removed).toHaveLength(1);
+  });
+
+  it("attaches connected-service networks before the command starts", async () => {
+    const { docker, container, created } = fakeDaemon();
+    const beforeStart = vi.fn(async (id: string) => {
+      expect(id).toBe(container.id);
+      expect(container.start).not.toHaveBeenCalled();
+    });
+    await (await runtimeWith(docker)).runReleaseCommand(
+      config({ networkAlias: "app" }), "migrate", () => {}, { beforeStart },
+    );
+    expect(beforeStart).toHaveBeenCalledOnce();
+    expect(created[0]!.HostConfig).toMatchObject({
+      NetworkMode: "project-network", LogConfig: { Type: "json-file" },
+    });
+  });
+
+  it("does not start the command when network attachment fails", async () => {
+    const { docker, container } = fakeDaemon();
+    await expect((await runtimeWith(docker)).runReleaseCommand(config(), "migrate", () => {}, {
+      beforeStart: async () => { throw new Error("Database network is unavailable"); },
+    })).rejects.toThrow("Database network is unavailable");
+    expect(container.start).not.toHaveBeenCalled();
+    expect(container.remove).toHaveBeenCalledOnce();
+  });
+
+  it("requires the app's network instead of silently running on the default bridge", async () => {
+    const { docker } = fakeDaemon();
+    docker.listNetworks.mockRejectedValueOnce(new Error("Cannot reach Docker"));
+    await expect((await runtimeWith(docker)).runReleaseCommand(
+      config({ networkAlias: "app" }), "migrate", () => {},
+    )).rejects.toThrow("Cannot reach Docker");
+    expect(docker.createContainer).not.toHaveBeenCalled();
+  });
+
+  it.each(["start", "logs", "wait"] as const)("bounds a stalled %s request and cleans up", async method => {
+    const { docker, container } = fakeDaemon();
+    container[method].mockImplementationOnce(() => new Promise<never>(() => {}));
+    await expect((await runtimeWith(docker)).runReleaseCommand(
+      config(), "migrate", () => {}, { timeoutMs: 20 },
+    )).rejects.toThrow(/timed out/);
+    expect(container.remove).toHaveBeenCalledOnce();
+    const call = container[method].mock.calls[0]![0] as { abortSignal: AbortSignal };
+    expect(call.abortSignal.aborted).toBe(true);
+  });
+
+  it("cancels while running without waiting for Docker's wait response", async () => {
+    const { docker, container } = fakeDaemon();
+    const abort = new AbortController();
+    container.wait.mockImplementationOnce(async () => {
+      abort.abort(new Error("Cancelled by user"));
+      return new Promise<never>(() => {});
+    });
+    await expect((await runtimeWith(docker)).runReleaseCommand(
+      config(), "migrate", () => {}, { signal: abort.signal },
+    )).rejects.toThrow("Cancelled by user");
+    expect(container.remove).toHaveBeenCalledOnce();
+  });
+
+  it("cleans up by name after a lost create response, and reaps a late response too", async () => {
+    const { docker, container } = fakeDaemon();
+    let finish!: (candidate: typeof container) => void;
+    docker.createContainer.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await expect((await runtimeWith(docker)).runReleaseCommand(
+      config(), "migrate", () => {}, { timeoutMs: 20 },
+    )).rejects.toThrow(/timed out/);
+    expect(docker.getContainer).toHaveBeenCalledWith(expect.stringContaining("openship-release-dep_1-"));
+    finish(container);
+    await vi.waitFor(() => expect(container.remove).toHaveBeenCalledTimes(2));
+    expect(container.start).not.toHaveBeenCalled();
+  });
+
+  it("decodes fragmented and coalesced Docker frames without losing UTF-8 output", async () => {
+    const wire = Buffer.concat([frame("Migrating λ…\n"), frame("warning\n", 2), frame("Done\n")]);
+    const chunks = Array.from(wire, (_byte, index) => wire.subarray(index, index + 1));
+    const { docker } = fakeDaemon({ chunks });
+    const lines: Array<{ message: string; level?: string }> = [];
+    await (await runtimeWith(docker)).runReleaseCommand(config(), "migrate", entry => lines.push(entry));
+    expect(lines.map(line => line.message).join("")).toBe("Migrating λ…\nwarning\nDone\n");
+    expect(lines.find(line => line.message === "warning\n")?.level).toBe("warn");
+  });
+
+  it("fails and removes the candidate if the log transport fails", async () => {
+    const { docker, stream, container } = fakeDaemon();
+    container.logs.mockImplementationOnce(async () => {
+      setImmediate(() => stream.destroy(new Error("SSH disconnected")));
+      return stream;
+    });
+    container.wait.mockImplementationOnce(() => new Promise<never>(() => {}));
+    await expect((await runtimeWith(docker)).runReleaseCommand(config(), "migrate", () => {}))
+      .rejects.toThrow("SSH disconnected");
+    expect(container.remove).toHaveBeenCalledOnce();
+  });
+
+  it("does not treat truncated output as a successful command", async () => {
+    const { docker, container } = fakeDaemon({ chunks: [frame("migrated").subarray(0, 10)] });
+    await expect((await runtimeWith(docker)).runReleaseCommand(config(), "migrate", () => {}))
+      .rejects.toThrow(/mid-frame/);
+    expect(container.remove).toHaveBeenCalledOnce();
   });
 
   it("refuses without a built image rather than running against nothing", async () => {

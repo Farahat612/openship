@@ -105,7 +105,12 @@
     "modeWorker": "Worker",
     "modeStatic": "Statisch",
     "workerModeDesc": "Läuft kontinuierlich ohne Port oder öffentliche URL – ein Queue-Consumer, Cronjob oder Bot.",
-    "buildSettingsTitle": "Build-Einstellungen"
+    "buildSettingsTitle": "Build-Einstellungen",
+    "releaseTitle": "Vor der Aktivierung",
+    "releaseDescription": "Optionale Befehle nach dem Build. Ein Fehler stoppt das Deployment. Nur für Docker- und Bare-Apps.",
+    "releaseCommand": "Befehl {number}",
+    "addReleaseCommand": "Befehl hinzufügen",
+    "removeReleaseCommand": "Befehl {number} entfernen"
   },
   "projectSettings": {
     "framework": "Framework",

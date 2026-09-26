@@ -222,6 +222,8 @@ export interface PrepareProjectResponse extends PrepareAppConfig {
    * common case) leaves it off, which is also what the pipeline does.
    */
   readiness?: OpenshipReadiness;
+  /** Ordered commands required before activating a single-app release. */
+  releaseCommands?: string[] | null;
   /**
    * What the repo's openship.json parse refused (#641). Advisory — the deploy
    * runs either way, on the fields that did parse. Reaches the wizard without a

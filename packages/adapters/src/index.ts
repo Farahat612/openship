@@ -64,6 +64,7 @@ export { DEFAULT_RESOURCE_CONFIG, DEFAULT_BUILD_RESOURCE_CONFIG } from "./types"
 export type {
   RuntimeAdapter,
   RuntimeCapability,
+  ReleaseCommandOptions,
   MultiServiceRuntimeAdapter,
   MultiServiceGroupHandle,
   MultiServiceDeployConfig,

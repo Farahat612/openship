@@ -24,6 +24,7 @@ export async function attachLinkedNetworks(
   runtime: AttachRuntime,
   log?: (message: string, level?: "info" | "warn") => void,
   deploymentId?: string,
+  onlyContainerIds?: string[],
 ): Promise<void> {
   if (!runtime.attachToExternalNetworks) return; // runtime can't join external nets (cloud)
   let hasServiceLinks = false;
@@ -44,7 +45,7 @@ export async function attachLinkedNetworks(
       } else if (src?.slug) nets.push(linkedNetworkName(src.slug));
     }
     const ownNetworks: string[] = [];
-    if (runtime.joinServiceGroupContainers) {
+    if (runtime.joinServiceGroupContainers && !onlyContainerIds) {
       const outgoing = await repos.projectConnection.listBySource(projectId);
       hasServiceLinks ||= outgoing.some(link => usesPrivateNetwork(link) && !!link.sourceServiceId);
       const source = await repos.project.findById(projectId);
@@ -67,7 +68,7 @@ export async function attachLinkedNetworks(
        */
       const project = await repos.project.findById(projectId).catch(() => null);
       const currentDeploymentId = deploymentId ?? project?.activeDeploymentId;
-      const deployment = project && currentDeploymentId
+      const deployment = !onlyContainerIds && project && currentDeploymentId
         ? await findProjectDeployment(project, currentDeploymentId).catch(() => undefined)
         : undefined;
       const stored = deployment
@@ -81,13 +82,16 @@ export async function attachLinkedNetworks(
           // A user-named project such as "shared-tools" can have this prefix too.
           // Always keep its own project network while removing revoked links.
           prunePrefix: "openship-shared-", retain: [...ownNetworks, ...(project?.slug ? [linkedNetworkName(project.slug)] : [])],
-          strict: hasServiceLinks,
+          strict: hasServiceLinks || !!onlyContainerIds,
+          ...(onlyContainerIds ? { onlyContainerIds } : {}),
         });
+      } else if (onlyContainerIds) {
+        await runtime.attachToExternalNetworks(projectId, networks, [], { onlyContainerIds, strict: true });
       } else await runtime.attachToExternalNetworks(projectId, networks, stored);
       if (nets.length) log?.(`Attached to ${networks.length} connected service network(s).`, "info");
     }
   } catch (err) {
-    if (hasServiceLinks) throw err;
+    if (hasServiceLinks || onlyContainerIds) throw err;
     log?.(
       `Warning: could not attach linked service networks: ${err instanceof Error ? err.message : String(err)}`,
       "warn",
