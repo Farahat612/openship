@@ -55,9 +55,8 @@ interface Capabilities {
 
 export function GitHubConnection() {
   // The Settings card owns the App-connection truth. The library context
-  // (useGitHub) is now gh-first and does NOT probe the App, so we fetch
-  // GET /github/status here — the cloud round-trip for the App badge +
-  // installations happens on THIS page only, never on a plain library browse.
+  // (useGitHub) can use a healthy local identity without probing the App, so we
+  // fetch GET /github/status here for both sources and their health.
   // Actions (connect/disconnect/connecting) still come from the shared context.
   const { connecting, connect, disconnect: ctxDisconnect, cliAction } = useGitHub();
   const { t } = useI18n();
@@ -83,6 +82,7 @@ export function GitHubConnection() {
   // the method list drops full-width below, instead of a w-full <details> that
   // wraps the toggle onto its own line under the button.
   const [showChangeMethod, setShowChangeMethod] = useState(false);
+  const [showTokenForm, setShowTokenForm] = useState(false);
   const statusRequest = useRef(0);
 
   const loadStatus = useCallback(async (force = false) => {
@@ -262,6 +262,31 @@ export function GitHubConnection() {
   // card used to render the connect chooser for both, so a revoked token looked
   // exactly like a fresh install while every clone using it failed.
   const ghProblem = state.sources.ghCli.problem;
+  const savedCredential = ghMethod === "token" || ghMethod === "device";
+  const tokenActions = savedCredential && can("token") ? (
+    <div className="flex flex-wrap items-center gap-3">
+      <button type="button" onClick={() => setShowTokenForm(true)} disabled={connecting}
+        className="text-xs font-medium text-foreground hover:underline disabled:opacity-50">
+        {t.settings.github.replaceToken}
+      </button>
+      <button type="button" disabled={connecting}
+        onClick={() => promptDisconnect("cli", ghMethodLabel, t.settings.github.ghCli.disconnectBody)}
+        className="text-xs font-medium text-muted-foreground hover:text-danger disabled:opacity-50">
+        {t.settings.github.clearToken}
+      </button>
+    </div>
+  ) : null;
+  const credentialProblem = ghProblem ? (
+    <CredentialProblem
+      problem={ghProblem}
+      methodLabel={ghMethodLabel}
+      checkedAt={state.sources.ghCli.checkedAt}
+      manageUrl={ghManageUrl}
+      manageLabel={ghManageLabel}
+      onRecheck={() => void loadStatus(true)}
+      actions={tokenActions}
+    />
+  ) : null;
 
   return (
     <SettingsSection
@@ -287,6 +312,12 @@ export function GitHubConnection() {
           onRefresh={() => void loadStatus(true)}
           isDesktop={isDesktop}
         />
+      ) : showTokenForm ? (
+        <TokenForm
+          message={t.settings.github.tokenEditorDescription}
+          onSaved={() => { setShowTokenForm(false); void loadStatus(true); }}
+          onCancel={() => setShowTokenForm(false)}
+        />
       ) : loading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
           <UiIcon name="spinner" className="size-4 animate-spin text-muted-foreground" />
@@ -294,22 +325,24 @@ export function GitHubConnection() {
         </div>
       ) : anyConnected ? (
         <div className="space-y-4">
+          {credentialProblem}
           {/* The identity that is actually authorizing clones, first. */}
           {ghConnected && (
-            <ActiveIdentity
-              icon={"terminal"}
-              label={ghLogin ? `@${ghLogin}` : ghMethodLabel}
-              avatarUrl={state.sources.ghCli.avatarUrl}
-              method={ghMethodLabel}
-              active={activeIsGh}
-              // Forwarding is a DESKTOP relay (api: relayConfigEligible requires
-              // isDesktop). Passing it on self-hosted told the operator to flip a
-              // toggle that can't take effect there; the accurate note for that
-              // case is the remote-credential one below.
-              forwardEnabled={isDesktop ? forwardGit : undefined}
-              remoteNeedsOwnCredential={!isDesktop}
-              onManageForward={() => router.push("/settings?tab=tokens")}
-            />
+            <div className="space-y-2">
+              <ActiveIdentity
+                icon={"terminal"}
+                label={ghLogin ? `@${ghLogin}` : ghMethodLabel}
+                avatarUrl={state.sources.ghCli.avatarUrl}
+                method={ghMethodLabel}
+                active={activeIsGh}
+                // Forwarding is a DESKTOP relay (api: relayConfigEligible requires
+                // isDesktop). Self-hosted remote builds use their own credentials.
+                forwardEnabled={isDesktop ? forwardGit : undefined}
+                remoteNeedsOwnCredential={!isDesktop}
+                onManageForward={() => router.push("/settings?tab=tokens")}
+              />
+              {!ghProblem && tokenActions}
+            </div>
           )}
 
           {appConnected && !customSourcesConfigured && (
@@ -470,7 +503,7 @@ export function GitHubConnection() {
                 onConnectApp={() => connect("oauth")}
                 onConnectCloud={startCloudConnect}
                 onSsh={() => router.push("/servers")}
-                onToken={() => router.push("/settings?tab=tokens")}
+                onToken={() => setShowTokenForm(true)}
               />
             )}
           </div>
@@ -483,16 +516,7 @@ export function GitHubConnection() {
            When a credential IS stored and merely failed its check, the chooser
            alone would be a lie by omission — hence the banner above it. */
         <div className="space-y-4">
-          {ghProblem && (
-            <CredentialProblem
-              problem={ghProblem}
-              methodLabel={ghMethodLabel}
-              checkedAt={state.sources.ghCli.checkedAt}
-              manageUrl={ghManageUrl}
-              manageLabel={ghManageLabel}
-              onRecheck={() => void loadStatus(true)}
-            />
-          )}
+          {credentialProblem}
           <MethodChooser
             can={can}
             appRequiresCloud={
@@ -507,7 +531,7 @@ export function GitHubConnection() {
             onConnectApp={() => connect("oauth")}
             onConnectCloud={startCloudConnect}
             onSsh={() => router.push("/servers")}
-            onToken={() => router.push("/settings?tab=tokens")}
+            onToken={() => setShowTokenForm(true)}
           />
         </div>
       )}
@@ -532,8 +556,9 @@ function CredentialProblem(props: {
   /** Re-run the verify. The card checks on load, but "unreachable" is usually
    *  transient and re-checking beats making the operator reload the page. */
   onRecheck: () => void;
+  actions?: React.ReactNode;
 }) {
-  const { problem, methodLabel, checkedAt, manageUrl, manageLabel, onRecheck } = props;
+  const { problem, methodLabel, checkedAt, manageUrl, manageLabel, onRecheck, actions } = props;
   const { t } = useI18n();
   const rejected = problem === "rejected";
   // Locale-formatted and only as precise as it needs to be. Invalid/absent
@@ -595,6 +620,7 @@ function CredentialProblem(props: {
             </span>
           )}
         </div>
+        {actions}
       </div>
     </div>
   );
@@ -906,18 +932,16 @@ function MethodChooser(props: {
 }
 
 /**
- * Paste-a-token connect. Shown when the instance has no device client id, which
- * is the case the old UI answered with "run `gh auth login` on the server" — an
- * instruction the operator often cannot follow (the api container has no `gh` and
- * cannot see the host's ~/.config/gh) and shouldn't have to.
+ * Shared token editor for first connection, explicit method selection, and
+ * replacement of a saved credential. Device-flow fallback uses it too.
  *
  * The server validates scope before storing, so an under-scoped token fails HERE,
  * on the field just typed into, rather than as a confusing clone failure inside a
  * deploy later. `gh auth login` survives as a secondary hint for bare installs
  * that do have the binary — reading its hosts.yml still works.
  */
-function TokenForm(props: { message: string; hint?: string; onSaved: () => void }) {
-  const { message, hint, onSaved } = props;
+function TokenForm(props: { message: string; hint?: string; onSaved: () => void; onCancel?: () => void }) {
+  const { message, hint, onSaved, onCancel } = props;
   const { t } = useI18n();
   const { connectWithToken } = useGitHub();
   const [token, setToken] = useState("");
@@ -948,6 +972,7 @@ function TokenForm(props: { message: string; hint?: string; onSaved: () => void 
       <div className="flex flex-wrap items-center gap-2">
         <input
           type="password"
+          aria-label={t.settings.github.methodToken}
           value={token}
           onChange={(e) => setToken(e.target.value)}
           onKeyDown={(e) => {
@@ -966,6 +991,10 @@ function TokenForm(props: { message: string; hint?: string; onSaved: () => void 
           {saving && <UiIcon name="spinner" className="size-4 animate-spin" />}
           {t.settings.github.tokenConnect}
         </button>
+        {onCancel && <button type="button" onClick={onCancel} disabled={saving}
+          className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-50">
+          {t.settings.common.cancel}
+        </button>}
       </div>
       {error && <p className="text-xs text-danger leading-relaxed">{error}</p>}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground/70">

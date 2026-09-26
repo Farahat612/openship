@@ -193,7 +193,7 @@
     "methodApp": "GitHub App",
     "methodAppDesc": "Scoped, short-lived installation tokens for local and remote deploys.",
     "methodSshDesc": "Attach a deploy key to each server (Servers → GitHub).",
-    "methodTokenDesc": "A personal access token, usable everywhere.",
+    "methodTokenDesc": "Use a GitHub token for repository browsing and local builds.",
     "signIn": "Sign in with GitHub",
     "signInDesc": "Browser sign-in with a device code. Nothing to register, no SSH into the server.",
     "changeMethod": "Change method",
@@ -215,7 +215,10 @@
     "credentialRejectedImpact": "It was revoked, expired, or lost a required scope. Deploys that clone with it will keep failing until you reconnect below.",
     "credentialUnreachable": "Couldn't reach GitHub to check the stored {method}.",
     "credentialUnreachableImpact": "This is usually a network problem rather than a bad credential — Openship keeps using it. Reconnecting won't help if GitHub is unreachable.",
-    "credentialCheckedAt": "Last checked {time}"
+    "credentialCheckedAt": "Last checked {time}",
+    "replaceToken": "Replace GitHub token",
+    "clearToken": "Clear saved token",
+    "tokenEditorDescription": "Use a GitHub personal access token for repository browsing and builds on this instance."
   },
   "deployDefaults": {
     "title": "Deploy Defaults",

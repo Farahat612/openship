@@ -159,7 +159,7 @@
     "checking": "Verificando…",
     "notConnectedManage": "Não conectado — gerencie nas Configurações",
     "optional": "Opcional",
-    "footnote": "Biblioteca local via gh CLI; implantações remotas usam tokens de curta duração —",
+    "footnote": "Gerencie as conexões do GitHub usadas para navegar e implantar repositórios.",
     "manageGithubSettings": "gerenciar o GitHub nas Configurações"
   },
   "urlImport": {

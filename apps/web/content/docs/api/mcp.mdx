@@ -15,8 +15,9 @@ Available on both self-hosted and Openship Cloud (mounted in the shared route se
 ## How authentication works
 
 A missing or invalid bearer returns **`401`** with a `WWW-Authenticate` header pointing at
-`/.well-known/oauth-protected-resource`, so OAuth-2.1 MCP clients can discover the authorization server and
-start the PKCE flow. A valid credential resolves the caller's effective capability — this is used only to
+`/.well-known/oauth-protected-resource/api/mcp`, so OAuth-2.1 MCP clients can discover the authorization server and
+start the PKCE flow. Self-hosted clients using `/api/proxy/api/mcp` receive metadata for that path instead,
+with a matching resource identifier. A valid credential resolves the caller's effective capability — this is used only to
 **filter `tools/list`** so the endpoint doesn't advertise tools the token can't use.
 
 The capability is **not** the authorization gate. Every `tools/call` builds an internal HTTP request and

@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GitHubProvider, type GitHubConnectionState } from "@/context/GitHubContext";
 import { GitHubConnection } from "./GitHubConnection";
+import { LibrarySidebar } from "../../library/components/LibrarySidebar";
 
 const api = vi.hoisted(() => ({
   connect: vi.fn(),
@@ -13,6 +14,11 @@ const api = vi.hoisted(() => ({
   getStatusDeduped: vi.fn(),
   invalidateStatus: vi.fn(),
   showToast: vi.fn(),
+  setInstanceToken: vi.fn(),
+  disconnect: vi.fn(),
+  showModal: vi.fn(),
+  hideModal: vi.fn(),
+  push: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -23,11 +29,11 @@ vi.mock("@/lib/api", () => ({
 }));
 vi.mock("@/context/ToastContext", () => ({ useToast: () => ({ showToast: api.showToast }) }));
 vi.mock("@/context/CloudContext", () => ({ useCloud: () => ({ connected: false }) }));
-vi.mock("@/context/ModalContext", () => ({ useModal: () => ({}) }));
+vi.mock("@/context/ModalContext", () => ({ useModal: () => ({ showModal: api.showModal, hideModal: api.hideModal }) }));
 vi.mock("@/context/PlatformContext", () => ({
   usePlatform: () => ({ selfHosted: true, deployMode: "docker" }),
 }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: api.push }) }));
 
 const disconnected: GitHubConnectionState = {
   primary: null,
@@ -63,6 +69,9 @@ beforeEach(() => {
   api.pollConnect.mockResolvedValue({ status: "pending" });
   api.getStatusDeduped.mockResolvedValue({ state: disconnected });
   api.getUserHome.mockResolvedValue({ state: disconnected });
+  api.setInstanceToken.mockResolvedValue({ connected: true, login: "new-account" });
+  api.disconnect.mockResolvedValue({ success: true });
+  api.showModal.mockReturnValue("disconnect-token");
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -97,6 +106,106 @@ function expectDeviceInstructions() {
   expect(container.textContent).toContain(deviceResponse.userCode);
   expect(container.querySelector('a[href="https://github.com/login/device"]')).not.toBeNull();
 }
+
+const appWithRejectedToken: GitHubConnectionState = {
+  primary: "openship-app",
+  sources: {
+    openshipApp: { connected: true, login: "app-user", hasInstallations: true },
+    ghCli: { available: false, method: "token", problem: "rejected" },
+  },
+};
+
+async function enterToken(value: string) {
+  const input = container.querySelector<HTMLInputElement>('input[aria-label="GitHub token"]');
+  expect(input).not.toBeNull();
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+describe("Settings repairs the stored GitHub token (#944)", () => {
+  beforeEach(() => {
+    api.getStatusDeduped.mockResolvedValue({ state: appWithRejectedToken });
+    api.getUserHome.mockResolvedValue({ state: appWithRejectedToken });
+  });
+
+  it("shows the rejected credential alongside the connected App and replaces it inline", async () => {
+    await render(appWithRejectedToken);
+    expect(container.textContent).toContain("GitHub rejected the stored GitHub token");
+    expect(container.textContent).toContain("@app-user");
+    await click("Replace GitHub token");
+    await enterToken("ghp_replacement");
+    const repaired = { ...appWithRejectedToken, sources: { ...appWithRejectedToken.sources, ghCli: { available: true, method: "token", login: "new-account" } } };
+    api.getStatusDeduped.mockResolvedValue({ state: repaired });
+    api.getUserHome.mockResolvedValue({ state: repaired });
+    await click("Connect");
+    expect(api.setInstanceToken).toHaveBeenCalledWith("ghp_replacement");
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(container.textContent).toContain("@new-account");
+    expect(api.push).not.toHaveBeenCalled();
+  });
+
+  it("clears only the saved credential while the App remains connected", async () => {
+    await render(appWithRejectedToken);
+    await click("Clear saved token");
+    const confirmation = api.showModal.mock.calls[0]![0];
+    const clear = confirmation.buttons.find((button: { variant: string }) => button.variant === "danger");
+    expect(clear).toBeDefined();
+    const appOnly = { ...appWithRejectedToken, sources: { ...appWithRejectedToken.sources, ghCli: { available: false } } };
+    api.getStatusDeduped.mockResolvedValue({ state: appOnly });
+    api.getUserHome.mockResolvedValue({ state: appOnly });
+    await act(async () => clear.onClick());
+    expect(api.disconnect).toHaveBeenCalledExactlyOnceWith("cli");
+    expect(container.textContent).toContain("@app-user");
+    expect(container.textContent).not.toContain("Clear saved token");
+  });
+
+  it("opens a GitHub token field from Change method instead of the OpenShip API-token page", async () => {
+    await render(appWithRejectedToken);
+    await click("Change method");
+    await click("Access token");
+    expect(container.querySelector('input[aria-label="GitHub token"]')).not.toBeNull();
+    expect(api.push).not.toHaveBeenCalled();
+    await click("Cancel");
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(container.textContent).toContain("@app-user");
+  });
+
+  it("leaves a rejected replacement in the editor with the server's error", async () => {
+    await render(appWithRejectedToken);
+    await click("Replace GitHub token");
+    await enterToken("ghp_invalid");
+    api.setInstanceToken.mockRejectedValueOnce(new Error("GitHub rejected this replacement token"));
+    await click("Connect");
+    expect(container.textContent).toContain("GitHub rejected this replacement token");
+    expect(container.querySelector<HTMLInputElement>('input[type="password"]')?.value).toBe("ghp_invalid");
+    expect(api.disconnect).not.toHaveBeenCalled();
+  });
+});
+
+describe("Library connection status after App fallback (#944)", () => {
+  it("shows the App first and reuses the fallback status without another cloud request", async () => {
+    await act(async () => root.render(
+      <LibrarySidebar state={appWithRejectedToken} repos={[]} selectedOwner="acme" selfHosted cloudConnected />,
+    ));
+    const text = container.textContent!;
+    expect(text.indexOf("GitHub App")).toBeLessThan(text.indexOf("GitHub token"));
+    expect(text).not.toContain("@undefined");
+    expect(text).not.toContain("Local library via gh CLI");
+    expect(container.querySelector('a[href="/settings?tab=git"]')).not.toBeNull();
+    expect(api.getStatusDeduped).not.toHaveBeenCalled();
+  });
+
+  it("does not invent a username when the token source has no login", async () => {
+    const state: GitHubConnectionState = { ...connected, sources: { ...connected.sources, ghCli: { available: true, method: "token" } } };
+    await act(async () => root.render(
+      <LibrarySidebar state={state} repos={[]} selectedOwner="acme" selfHosted cloudConnected />,
+    ));
+    expect(container.textContent).not.toContain("@undefined");
+    expect(container.textContent).toContain("GitHub token");
+  });
+});
 
 describe("Settings GitHub device sign-in (#851)", () => {
   it("shows the returned code, copies it, and updates the card after polling completes", async () => {

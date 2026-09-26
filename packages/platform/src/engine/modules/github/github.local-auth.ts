@@ -38,7 +38,7 @@ import { env } from "../../config/env";
 import { cacheStore } from "../../lib/cache-store/index";
 import { decrypt, encrypt } from "../../lib/encryption";
 import { systemDebug } from "../../lib/system-debug";
-import { ghFetchSoft } from "./github.http";
+import { ghFetchSoft, isGitHubCredentialRejected } from "./github.http";
 import { getGitHubAuthMode } from "./github.auth";
 import { safeErrorMessage } from "@repo/core";
 import { nativeHostExecutionEnabled } from "../../native/execution-policy";
@@ -257,16 +257,11 @@ export async function getLocalGhStatus(): Promise<LocalGhStatus> {
     if (!res.ok) {
       // GitHub uses 403 for primary and secondary rate limits as well as for
       // authorization failures. A throttled check says nothing about token validity.
-      let rateLimited =
-        res.status === 429 ||
-        (res.status === 403 &&
-          (res.headers.get("x-ratelimit-remaining") === "0" || res.headers.has("retry-after")));
-      if (res.status === 403 && !rateLimited) {
+      let rejected = isGitHubCredentialRejected(res.status, res.headers);
+      if (res.status === 403 && rejected) {
         const body = (await res.json().catch(() => null)) as { message?: unknown } | null;
-        rateLimited =
-          typeof body?.message === "string" && /rate limit|abuse detection/i.test(body.message);
+        rejected = isGitHubCredentialRejected(res.status, res.headers, body?.message);
       }
-      const rejected = res.status === 401 || (res.status === 403 && !rateLimited);
       systemDebug(
         "gh-cli",
         `/user verify failed: status=${res.status} method=${method} — ` +

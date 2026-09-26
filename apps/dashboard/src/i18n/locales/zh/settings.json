@@ -115,7 +115,11 @@
       "disconnectPrefix": "要断开连接，请运行",
       "disconnectSuffix": "在你的终端中。",
       "use": "使用 gh CLI"
-    }
+    },
+    "replaceToken": "替换 GitHub 令牌",
+    "clearToken": "清除已保存的令牌",
+    "tokenEditorDescription": "使用 GitHub 个人访问令牌浏览仓库并在此实例上构建。",
+    "methodTokenDesc": "使用 GitHub 令牌浏览仓库并进行本地构建。"
   },
   "deployDefaults": {
     "title": "部署默认设置",

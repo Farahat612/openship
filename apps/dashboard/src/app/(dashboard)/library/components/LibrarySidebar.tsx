@@ -39,16 +39,13 @@ export function LibrarySidebar({
   const publicCount = counts?.publicCount ?? repos.filter((r) => !r.private).length;
   const privateCount = counts?.privateCount ?? repos.filter((r) => r.private).length;
 
-  // NOTE: the library never probes the App. The state here is gh-FIRST (from
-  // GET /github/home, which is zero-cloud when gh is logged in), so the App
-  // row deliberately shows "Manage in Settings" rather than a definitive
-  // connected/disconnected — the App's real status lives on the Settings page
-  // (GET /github/status), the ONLY place we pay the cloud round-trip.
+  // The backend chooses the primary source, including App fallback when the
+  // saved identity is rejected. Connection management lives in Settings → Git.
   return (
     <div className="space-y-4 lg:sticky lg:top-6 lg:self-start">
       {/* ── Connection status ─────────────────────────────────────
           SaaS mode (!selfHosted) → single card: Openship GitHub App.
-          Self-hosted/desktop → gh CLI primary + Openship Cloud optional. */}
+          Self-hosted/desktop → local identity and the connected App. */}
       {selfHosted ? (
         <SelfHostedConnectionCard
           state={state}
@@ -149,13 +146,8 @@ function SaasConnectionCard({
 }
 
 /**
- * Self-hosted / desktop connection card. Per the architecture rules:
- *   - gh CLI is the PRIMARY source of truth for listing.
- *   - Openship Cloud App is the OPTIONAL secondary source that mints
- *     safer short-lived install tokens for remote cloning.
- *
- * Both rows read straight from the canonical state — no derivation,
- * no parallel booleans, no suppression-flag handling in the UI.
+ * Self-hosted / desktop connection card. The active library source comes first;
+ * a rejected local identity remains visible alongside a working App.
  */
 function SelfHostedConnectionCard({
   state,
@@ -170,7 +162,7 @@ function SelfHostedConnectionCard({
   // container with no `gh` and no shell, so its row must never say "gh CLI" or
   // "Run gh auth login" — it connects with a token (or the App).
   const isDesktop = deployMode === "desktop";
-  const cliConnected = state.sources.ghCli.available;
+  const cliConnected = state.sources.ghCli.available && !state.sources.ghCli.problem;
   const cliLogin = state.sources.ghCli.login;
   // Name it by how it was actually connected. This row said "gh CLI" for every
   // identity, so a pasted token or a browser sign-in was reported as a gh-CLI
@@ -192,20 +184,21 @@ function SelfHostedConnectionCard({
       ? t.library.sidebar.methodDevice
       : t.library.sidebar.methodToken;
   const primarySublabel = cliConnected
-    ? `@${cliLogin}`
+    ? cliLogin ? `@${cliLogin}` : t.library.sidebar.connected
     : isDesktop
       ? t.library.sidebar.runGhAuth
       : t.library.sidebar.notConnected;
 
-  // App status is NOT part of the gh-first `state` (GET /github/home is
-  // zero-cloud by design). To show the REAL App connection without slowing the
-  // library, we fetch GET /github/status once on mount — non-blocking, so the
-  // card renders immediately from gh state and the App row resolves a beat
-  // later. `null` = still checking. This is the one place in the library that
-  // pays the cloud round-trip, and only for this secondary row.
+  // An App fallback is already present in /home. A healthy local identity keeps
+  // /home free of cloud requests, so only that path needs a separate App probe.
   const [appStatus, setAppStatus] = useState<{ connected: boolean; login?: string | null } | null>(null);
 
   useEffect(() => {
+    const knownApp = state.sources.openshipApp;
+    if (knownApp.connected) {
+      setAppStatus({ connected: true, login: knownApp.login });
+      return;
+    }
     let cancelled = false;
     githubApi
       .getStatusDeduped<any>()
@@ -222,7 +215,7 @@ function SelfHostedConnectionCard({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [state.sources.openshipApp.connected, state.sources.openshipApp.login]);
 
   const appSublabel =
     appStatus === null
@@ -230,6 +223,17 @@ function SelfHostedConnectionCard({
       : appStatus.connected
         ? appStatus.login ? `@${appStatus.login}` : t.library.sidebar.connected
         : t.library.sidebar.notConnectedManage;
+
+  const cliRow = (
+    <SourceRow key="cli" icon={primaryIcon} label={primaryLabel}
+      sublabel={primarySublabel} connected={cliConnected}
+      tone={state.primary === "gh-cli" ? "primary" : "secondary"} />
+  );
+  const appRow = appStatus?.connected ? (
+    <SourceRow key="app" icon="cloud" label={t.settings.github.methodApp}
+      sublabel={appSublabel} connected
+      tone={state.primary === "openship-app" ? "primary" : "secondary"} />
+  ) : null;
 
   return (
     <div className="bg-card rounded-2xl border border-border/50 p-5">
@@ -239,39 +243,16 @@ function SelfHostedConnectionCard({
       </div>
 
       <div className="space-y-2.5">
-        {/* PRIMARY: the instance's own GitHub identity (gh CLI on desktop; a
-            token on a VPS — never gh-CLI framing there). */}
-        <SourceRow
-          icon={primaryIcon}
-          label={primaryLabel}
-          sublabel={primarySublabel}
-          connected={cliConnected}
-          tone="primary"
-        />
-
-        {/* SECONDARY: Openship Cloud App — rendered ONLY when it is actually
-            connected. A permanent "Openship Cloud App · Not connected" row on a
-            self-hosted install is an advert, not status: nothing here needs it,
-            and sitting next to the working connection it read like something was
-            half-configured. Connecting it lives in Settings. */}
-        {appStatus?.connected && (
-          <SourceRow
-            icon={"cloud"}
-            label={t.library.sidebar.openshipCloudApp}
-            sublabel={appSublabel}
-            connected
-            tone="secondary"
-          />
-        )}
+        {state.primary === "openship-app" ? [appRow, cliRow] : [cliRow, appRow]}
       </div>
 
-      {/* Footnote: the library is gh-driven; App status + install live in Settings */}
+      {/* Connection management includes the active App and stored-token repair. */}
       <div className="mt-4 flex items-start gap-2 rounded-xl border border-border/40 bg-muted/30 px-3 py-2.5">
         <UiIcon name="shield" className="size-3.5 text-muted-foreground shrink-0 mt-0.5" />
         <p className="text-xs text-muted-foreground leading-relaxed">
           {t.library.sidebar.footnote}{" "}
           <Link
-            href="/settings"
+            href="/settings?tab=git"
             className="font-medium text-foreground hover:underline"
           >
             {t.library.sidebar.manageGithubSettings}

@@ -70,7 +70,7 @@ describe("LocalGitHubSource with an operator-owned App", () => {
       listReposForOwner: vi.fn(async () => [repo("shared", "cli"), repo("cli-only", "cli")]),
       listAllRepos: vi.fn(),
       listOwners: vi.fn(),
-      status: vi.fn(),
+      status: vi.fn(async () => ({ available: true, login: "operator", method: "token" })),
     } as any;
     const source = new LocalGitHubSource({ userId: "u", organizationId: "o" } as any, gh);
 

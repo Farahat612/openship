@@ -150,7 +150,7 @@
     "checking": "Kontrol ediliyor…",
     "notConnectedManage": "Bağlı değil — Ayarlar kısmında yönetin",
     "optional": "İsteğe bağlı",
-    "footnote": "gh CLI üzerinden yerel kütüphane; uzak dağıtımlar kısa ömürlü jetonlar kullanır —",
+    "footnote": "Depoları görüntülemek ve dağıtmak için kullanılan GitHub bağlantılarını yönetin.",
     "manageGithubSettings": "GitHub'ı Ayarlar kısmında yönetin"
   },
   "urlImport": {

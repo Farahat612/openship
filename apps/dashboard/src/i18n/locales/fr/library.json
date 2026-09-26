@@ -159,7 +159,7 @@
     "checking": "Vérification…",
     "notConnectedManage": "Non connecté — gérer dans les paramètres",
     "optional": "Facultatif",
-    "footnote": "Bibliothèque locale via la CLI gh ; les déploiements distants utilisent des jetons éphémères —",
+    "footnote": "Gérez les connexions GitHub utilisées pour parcourir et déployer les dépôts.",
     "manageGithubSettings": "gérer GitHub dans les paramètres"
   },
   "urlImport": {

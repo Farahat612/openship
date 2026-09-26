@@ -159,7 +159,7 @@
     "checking": "检查中…",
     "notConnectedManage": "未连接——在设置中管理",
     "optional": "可选",
-    "footnote": "本地库通过 gh CLI 访问；远程部署使用短期令牌——",
+    "footnote": "管理用于浏览和部署仓库的 GitHub 连接。",
     "manageGithubSettings": "在设置中管理 GitHub"
   },
   "urlImport": {

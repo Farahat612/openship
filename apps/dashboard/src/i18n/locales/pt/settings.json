@@ -115,7 +115,11 @@
       "disconnectPrefix": "Para desconectar, execute",
       "disconnectSuffix": "no seu terminal.",
       "use": "Usar gh CLI"
-    }
+    },
+    "replaceToken": "Substituir token do GitHub",
+    "clearToken": "Apagar token salvo",
+    "tokenEditorDescription": "Use um token de acesso pessoal do GitHub para navegar pelos repositórios e compilar nesta instância.",
+    "methodTokenDesc": "Use um token do GitHub para navegar pelos repositórios e realizar compilações locais."
   },
   "deployDefaults": {
     "title": "Padrões de Implantação",

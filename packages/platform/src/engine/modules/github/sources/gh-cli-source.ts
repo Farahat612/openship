@@ -32,6 +32,9 @@ import type {
 export type GhCliStatus = LocalGhStatus;
 
 export class GhCliSource {
+  // Sources live for one request; home and owner listing share one verification.
+  private statusPromise?: Promise<GhCliStatus>;
+
   constructor(private readonly userId: string) {}
 
   /** Raw local gh token (or null). */
@@ -41,7 +44,7 @@ export class GhCliSource {
 
   /** gh CLI auth status + profile. */
   status(): Promise<GhCliStatus> {
-    return getLocalGhStatus();
+    return this.statusPromise ??= getLocalGhStatus();
   }
 
   /** Every repo the gh user can see (owner + collaborator + org member). */
@@ -68,7 +71,7 @@ export class GhCliSource {
     const out: MappedAccount[] = [];
     const seen = new Set<string>();
 
-    const st = await getLocalGhStatus();
+    const st = await this.status();
     if (st.available && st.login) {
       out.push({
         login: st.login,

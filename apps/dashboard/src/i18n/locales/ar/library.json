@@ -159,7 +159,7 @@
     "checking": "جارٍ التحقق…",
     "notConnectedManage": "غير متصل — الإدارة من الإعدادات",
     "optional": "اختياري",
-    "footnote": "‏gh CLI يشغّل المكتبة محليًا. للنشر عن بُعد، يُصدر تطبيق Openship السحابي رموزًا قصيرة الأجل —",
+    "footnote": "إدارة اتصالات GitHub المستخدمة لتصفح المستودعات ونشرها.",
     "manageGithubSettings": "إدارة GitHub من الإعدادات"
   },
   "urlImport": {

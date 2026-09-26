@@ -159,7 +159,7 @@
     "checking": "確認中…",
     "notConnectedManage": "未接続 — 設定で管理",
     "optional": "任意",
-    "footnote": "gh CLI 経由のローカルライブラリ。リモートデプロイには短命トークンを使用します —",
+    "footnote": "リポジトリの閲覧とデプロイに使用するGitHub接続を管理します。",
     "manageGithubSettings": "設定で GitHub を管理"
   },
   "urlImport": {

@@ -115,7 +115,11 @@
       "disconnectPrefix": "لقطع الاتصال، شغّل",
       "disconnectSuffix": "في طرفيتك.",
       "use": "استخدام gh CLI"
-    }
+    },
+    "replaceToken": "استبدال رمز GitHub",
+    "clearToken": "مسح الرمز المحفوظ",
+    "tokenEditorDescription": "استخدم رمز وصول شخصي من GitHub لتصفح المستودعات والبناء على هذا المثيل.",
+    "methodTokenDesc": "استخدم رمز GitHub لتصفح المستودعات والبناء محليًا."
   },
   "deployDefaults": {
     "title": "إعدادات النشر الافتراضية",

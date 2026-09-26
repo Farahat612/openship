@@ -130,6 +130,9 @@ export interface TokenContext {
    *  belongs here and not in `op`: GitHub's Checks API accepts App installation
    *  tokens only (see `credential` in githubFetch). */
   only?: GitHubTokenSource[];
+  /** Skip sources already rejected during this read. Does not change the
+   *  chain's order, permissions, or which kinds are available on this platform. */
+  exclude?: GitHubTokenSource[];
 }
 
 // ─── The dispatcher ─────────────────────────────────────────────────────────
@@ -391,9 +394,11 @@ function platformFor(): GitHubPlatform {
  *  empty filter would resolve zero credentials and surface as the generic
  *  "connect your GitHub account" throw, which is a confusing way to report a
  *  caller passing `[]`. A pin has to name at least one kind to mean anything. */
-function chainFor(purpose: GitHubPurpose, only?: GitHubTokenSource[]): CredentialSpec[] {
+function chainFor(purpose: GitHubPurpose, only?: GitHubTokenSource[], exclude?: GitHubTokenSource[]): CredentialSpec[] {
   const kinds = CHAINS[platformFor()][purpose];
-  return (only?.length ? kinds.filter((k) => only.includes(k)) : kinds).map((kind) => SPECS[kind]);
+  return kinds
+    .filter((kind) => (!only?.length || only.includes(kind)) && !exclude?.includes(kind))
+    .map((kind) => SPECS[kind]);
 }
 
 /**
@@ -458,7 +463,7 @@ export async function tokenFor(
   tokenCtx: TokenContext = {},
 ): Promise<TokenResult | null> {
   const c = await chainCtx(ctx, purpose, tokenCtx);
-  for (const spec of chainFor(purpose, tokenCtx.only)) {
+  for (const spec of chainFor(purpose, tokenCtx.only, tokenCtx.exclude)) {
     const token = await spec.resolve(c);
     if (token) return { token, source: spec.kind };
   }
@@ -483,7 +488,7 @@ export async function canResolveTokenFor(
   tokenCtx: TokenContext = {},
 ): Promise<GitHubTokenSource | null> {
   const c = await chainCtx(ctx, purpose, tokenCtx);
-  for (const spec of chainFor(purpose, tokenCtx.only)) {
+  for (const spec of chainFor(purpose, tokenCtx.only, tokenCtx.exclude)) {
     if (await spec.probe(c)) return spec.kind;
   }
   return null;

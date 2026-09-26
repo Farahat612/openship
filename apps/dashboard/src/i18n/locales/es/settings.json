@@ -115,7 +115,11 @@
       "disconnectPrefix": "Para desconectar, ejecuta",
       "disconnectSuffix": "en tu terminal.",
       "use": "Usar gh CLI"
-    }
+    },
+    "replaceToken": "Reemplazar token de GitHub",
+    "clearToken": "Borrar token guardado",
+    "tokenEditorDescription": "Usa un token de acceso personal de GitHub para explorar repositorios y compilar en esta instancia.",
+    "methodTokenDesc": "Usa un token de GitHub para explorar repositorios y realizar compilaciones locales."
   },
   "deployDefaults": {
     "title": "Valores predeterminados de despliegue",

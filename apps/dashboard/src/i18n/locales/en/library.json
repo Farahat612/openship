@@ -173,7 +173,7 @@
     "checking": "Checking…",
     "notConnectedManage": "Not connected — manage in Settings",
     "optional": "Optional",
-    "footnote": "Local library via gh CLI; remote deploys use short-lived tokens —",
+    "footnote": "Manage the GitHub connections used to browse and deploy repositories.",
     "manageGithubSettings": "manage GitHub in Settings",
     "methodToken": "GitHub token",
     "methodDevice": "GitHub sign-in"
