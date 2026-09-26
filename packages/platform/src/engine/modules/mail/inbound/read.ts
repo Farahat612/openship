@@ -188,14 +188,22 @@ export async function runInboundForServer(opts: {
       }
 
       if (!dryRun) {
-        for (const [, group] of perRule) {
-          emitted += await emitForRule(organizationId, serverId, domain, group);
+        for (const [ruleId, group] of perRule) {
+          try {
+            emitted += await emitForRule(organizationId, serverId, domain, group);
+            await repos.mailInbound.markMatched(ruleId).catch(() => undefined);
+          } catch (err) {
+            errors.push(`${domain} rule ${ruleId}: ${safeErrorMessage(err)}`);
+          }
         }
         // Delete AFTER dispatch. A message that produced no match is deleted too: it was
         // examined and rejected, and leaving it would re-examine it forever.
-        await deleteMessages(serverId, folder, handled);
-        for (const ruleId of perRule.keys()) {
-          await repos.mailInbound.markMatched(ruleId).catch(() => undefined);
+        // Handled messages must be deleted even if an emit failed so a poisoned message
+        // does not cause infinite 60-second reprocessing loops.
+        try {
+          await deleteMessages(serverId, folder, handled);
+        } catch (delErr) {
+          errors.push(`${domain} message cleanup: ${safeErrorMessage(delErr)}`);
         }
       }
     } catch (err) {

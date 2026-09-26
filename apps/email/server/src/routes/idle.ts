@@ -53,20 +53,42 @@ idleRoute.get('/idle', async (c) => {
       client.on('flags', onChange);
       await client.idle();
 
-      stream.onAbort(async () => {
+      let aborted = false;
+      let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      let resolveTimer: (() => void) | null = null;
+
+      const cleanup = async () => {
+        if (aborted) return;
+        aborted = true;
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+          idleTimer = null;
+        }
+        client.removeListener('exists', onChange);
+        client.removeListener('expunge', onChange);
+        client.removeListener('flags', onChange);
+        resolveTimer?.();
         try {
           await client.logout();
         } catch {
           /* ignore */
         }
-      });
+      };
+
+      stream.onAbort(cleanup);
 
       // Keep the response open until aborted. `idle()` returns when
       // the IDLE is broken; loop so brief disconnects don't end the
       // stream.
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        await new Promise((r) => setTimeout(r, 1000 * 60 * 25));
+      while (!aborted) {
+        await new Promise<void>((r) => {
+          resolveTimer = r;
+          idleTimer = setTimeout(() => {
+            idleTimer = null;
+            r();
+          }, 1000 * 60 * 25);
+        });
+        if (aborted) break;
         try {
           await client.noop();
         } catch {
@@ -74,7 +96,7 @@ idleRoute.get('/idle', async (c) => {
         }
       }
     } catch (err) {
-      await send('error', { message: (err as Error).message });
+      await send('error', { message: (err as Error).message }).catch(() => {});
     } finally {
       try {
         await client.logout();

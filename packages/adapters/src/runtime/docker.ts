@@ -241,6 +241,15 @@ const RESTART_POLICIES: Record<string, { Name: string; MaximumRetryCount: number
   no: { Name: "no", MaximumRetryCount: 0 },
 };
 
+/** Default bounded container logging options to prevent unbounded disk growth. */
+export const DEFAULT_CONTAINER_LOG_CONFIG = {
+  Type: "json-file",
+  Config: {
+    "max-size": "20m",
+    "max-file": "3",
+  },
+} as const;
+
 interface DockerodeBuildStreamOptions {
   trace?: BuildKitTraceDecoder;
   diagnosticContext?: DockerBuildDiagnosticContext;
@@ -3585,6 +3594,7 @@ export class DockerRuntime implements RuntimeAdapter {
         : {}),
       HostConfig: {
         RestartPolicy: restartPolicy,
+        LogConfig: DEFAULT_CONTAINER_LOG_CONFIG,
         Binds: binds,
         // Join the project's own bridge network as the primary network (mirrors
         // the compose path's NetworkMode: group.id). Egress + loopback publish are
@@ -5425,6 +5435,7 @@ export class DockerRuntime implements RuntimeAdapter {
       ...(ownsProjectEndpoint ? { ExposedPorts: exposedPorts } : {}),
       HostConfig: {
         RestartPolicy: restartPolicy,
+        LogConfig: DEFAULT_CONTAINER_LOG_CONFIG,
         ...dockerResourceLimits(config.resources),
         ...(ownsProjectEndpoint ? { PortBindings: portBindings } : {}),
         Binds: binds,

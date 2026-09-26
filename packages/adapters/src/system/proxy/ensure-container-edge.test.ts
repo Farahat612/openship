@@ -246,6 +246,8 @@ describe("buildEdgeRunCommand", () => {
     // Host networking is what lets it own :80/:443 and reach apps on loopback.
     expect(cmd).toContain("--network host");
     expect(cmd).toContain("--restart unless-stopped");
+    expect(cmd).toContain("--log-opt max-size=20m");
+    expect(cmd).toContain("--log-opt max-file=3");
     expect(cmd).toContain("'/var/lib/openship/edge/sites-enabled:/usr/local/openresty/nginx/conf/sites-enabled:z'");
     expect(cmd).toContain("'/etc/letsencrypt:/etc/letsencrypt:z'");
     expect(cmd).toContain("'/var/lib/openship/edge/acme:/var/www/acme:z'");

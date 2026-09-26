@@ -55,8 +55,13 @@ export class TtlCache<T> {
 
   /** Set a value with a TTL in seconds. */
   set(key: string, value: T, ttlSeconds: number): void {
-    if (this.store.size >= this.maxSize) {
+    if (!this.store.has(key) && this.store.size >= this.maxSize) {
       this.sweep();
+      while (this.store.size >= this.maxSize) {
+        const oldestKey = this.store.keys().next().value;
+        if (!oldestKey) break;
+        this.store.delete(oldestKey);
+      }
     }
     this.store.set(key, {
       value,

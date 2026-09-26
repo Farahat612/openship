@@ -332,6 +332,8 @@ export function buildEdgeRunCommand(
     `--name ${sq(container)}`,
     "--network host",
     "--restart unless-stopped",
+    "--log-opt max-size=20m",
+    "--log-opt max-file=3",
     mounts,
     sq(image),
   ].join(" ");
