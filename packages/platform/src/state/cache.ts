@@ -17,11 +17,14 @@ interface CacheEntry<T> {
   expiresAt: number;
 }
 
-export interface TtlCacheOptions {
+export interface TtlCacheOptions<T = unknown> {
   /** Maximum number of entries before oldest are evicted (default: 5000). */
   maxSize?: number;
   /** Interval in ms for the background sweep timer (default: 60000). 0 = disabled. */
   sweepIntervalMs?: number;
+  /** Capacity-only policy; TTL expiry is unchanged. If all entries are protected,
+   * inserting a new key throws instead of evicting an entry still in use. */
+  canEvict?: (value: T) => boolean;
 }
 
 export class TtlCache<T> {
@@ -29,8 +32,11 @@ export class TtlCache<T> {
   private readonly maxSize: number;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(opts: TtlCacheOptions = {}) {
+  constructor(private readonly opts: TtlCacheOptions<T> = {}) {
     this.maxSize = opts.maxSize ?? 5_000;
+    if (!Number.isSafeInteger(this.maxSize) || this.maxSize < 1) {
+      throw new TypeError("Cache maxSize must be a positive integer");
+    }
     const sweepMs = opts.sweepIntervalMs ?? 60_000;
 
     if (sweepMs > 0) {
@@ -58,9 +64,14 @@ export class TtlCache<T> {
     if (!this.store.has(key) && this.store.size >= this.maxSize) {
       this.sweep();
       while (this.store.size >= this.maxSize) {
-        const oldestKey = this.store.keys().next().value;
-        if (!oldestKey) break;
-        this.store.delete(oldestKey);
+        let evicted = false;
+        for (const [oldestKey, entry] of this.store) {
+          if (this.opts.canEvict && !this.opts.canEvict(entry.value)) continue;
+          this.store.delete(oldestKey);
+          evicted = true;
+          break;
+        }
+        if (!evicted) throw new Error("Cache capacity reached; all entries are in use");
       }
     }
     this.store.set(key, {

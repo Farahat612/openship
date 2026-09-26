@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   reportPipelineError: vi.fn(),
   setDeploymentStatus: vi.fn(),
   onDeploymentReady: vi.fn(),
+  createSession: vi.fn(),
   appendLog: vi.fn(),
   ensureRoutingReady: vi.fn(),
   prepareTargetPinnedHostPorts: vi.fn(),
@@ -148,7 +149,7 @@ vi.mock("@repo/platform/engine/lib/resources", () => ({
 vi.mock("../../lib/request-context", () => ({ buildBackgroundContext: vi.fn(() => ({})) }));
 
 vi.mock("@repo/platform/engine/modules/deployments/session-manager", () => ({
-  createSession: vi.fn(),
+  createSession: (...args: unknown[]) => mocks.createSession(...args),
   appendLog: (...args: unknown[]) => mocks.appendLog(...args),
   updateStatus: vi.fn(),
   promptUser: vi.fn(),
@@ -599,6 +600,26 @@ describe("single-app prebuilt release-image pipeline", () => {
     expect(mocks.prepareImage).not.toHaveBeenCalled();
     expect(mocks.onSuccess).not.toHaveBeenCalled();
     expect(mocks.acknowledgeBuildExecutionFinished).not.toHaveBeenCalled();
+  });
+
+  it("fails and releases the claimed build when the live session cache is full", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.createSession.mockImplementationOnce(() => {
+      throw new Error("Cache capacity reached; all entries are in use");
+    });
+    try {
+      await run();
+      await drainDeploymentExecutions();
+
+      expect(mocks.updateDeploymentStatus).toHaveBeenCalledWith("deployment-1", "failed");
+      expect(mocks.updateBuildSession).toHaveBeenCalledWith("build-session-1", { status: "failed" });
+      expect(mocks.acknowledgeBuildExecutionFinished).toHaveBeenCalledWith("build-session-1");
+      expect(requestDeploymentCancellation("deployment-1")).toBe(false);
+      expect(mocks.prepareImage).not.toHaveBeenCalled();
+      expect(mocks.runDeployPipeline).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("inventories migrated edge routes before reserving a loopback host port", async () => {

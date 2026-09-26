@@ -35,7 +35,11 @@ export interface EdgeConsentSession {
   pendingPrompt?: PromptPayload;
 }
 
-const sessions = new TtlCache<EdgeConsentSession>({ maxSize: 50, sweepIntervalMs: 60_000 });
+const sessions = new TtlCache<EdgeConsentSession>({
+  maxSize: 50,
+  sweepIntervalMs: 60_000,
+  canEvict: (session) => session.status !== "running" && !session.pendingPrompt,
+});
 const promptRegistry = new PromptRegistry();
 
 const heartbeat = setInterval(() => {

@@ -53,6 +53,38 @@ describe("TtlCache", () => {
     expect(cache.get("k2")).toBe("v2");
   });
 
+  it("evicts an empty-string key when it is the oldest entry", () => {
+    const cache = new TtlCache<string>({ maxSize: 1, sweepIntervalMs: 0 });
+    cache.set("", "old", 300);
+    cache.set("next", "new", 300);
+    expect(cache.size).toBe(1);
+    expect(cache.get("")).toBeNull();
+    expect(cache.get("next")).toBe("new");
+  });
+
+  it("evicts completed work before live work and refuses excess admission when all entries are in use", () => {
+    const cache = new TtlCache<{ running: boolean }>({
+      maxSize: 2,
+      sweepIntervalMs: 0,
+      canEvict: (value) => !value.running,
+    });
+    cache.set("live", { running: true }, 300);
+    cache.set("finished", { running: false }, 300);
+    cache.set("next", { running: true }, 300);
+    expect(cache.has("live")).toBe(true);
+    expect(cache.has("finished")).toBe(false);
+    expect(cache.has("next")).toBe(true);
+    expect(() => cache.set("excess", { running: true }, 300)).toThrow("all entries are in use");
+    expect(cache.size).toBe(2);
+    expect(cache.has("live")).toBe(true);
+    expect(cache.has("next")).toBe(true);
+    expect(cache.has("excess")).toBe(false);
+  });
+
+  it.each([0, -1, 1.5, Infinity, NaN])("rejects invalid capacity %s before starting a timer", (maxSize) => {
+    expect(() => new TtlCache({ maxSize })).toThrow("positive integer");
+  });
+
   it("sweep removes all expired entries", () => {
     vi.useFakeTimers();
     try {
