@@ -532,6 +532,55 @@ describe("teardownProject — record-only delete touches nothing on the server",
   });
 });
 
+describe("teardownProject — cluster namespace cleanup", () => {
+  it.each([true, false])(
+    "preserves project cleanup with remaining workloads: %s",
+    async (hasWorkloads) => {
+      const manifest = {
+        projectId: "p1",
+        organizationId: "org1",
+        projectCleanup: true,
+        resources: hasWorkloads
+          ? [{ type: "container", ref: "k8s:release", label: "application" }]
+          : [],
+        runtimes: [{ name: "kubernetes", cleanupProject: vi.fn() }],
+      };
+      h.collectProjectManifest.mockResolvedValueOnce(manifest as never);
+
+      const result = await teardownProject(ctx, "p1", { force: false });
+
+      // Namespace cleanup remains necessary after a previous attempt removed
+      // every workload and route. It must not be filtered out or skipped.
+      expect(h.executeCleanup).toHaveBeenCalledWith(manifest);
+      expect(stepOf(result.steps, "runtime_cleanup")?.status).toBe("ok");
+      expect(result.rowDeleted).toBe(true);
+    },
+  );
+
+  it("retains the project for retry when its remaining namespace cannot be cleaned", async () => {
+    h.collectProjectManifest.mockResolvedValueOnce({
+      projectId: "p1",
+      organizationId: "org1",
+      projectCleanup: true,
+      resources: [],
+      runtimes: [{ name: "kubernetes", cleanupProject: vi.fn() }],
+    } as never);
+    h.executeCleanup.mockResolvedValueOnce({
+      total: 1,
+      succeeded: 0,
+      failed: [{ label: "Cluster project namespace", error: "Persistent storage remains" }],
+    } as never);
+
+    const result = await teardownProject(ctx, "p1", { force: false });
+
+    expect(result.rowDeleted).toBe(false);
+    expect(result.canForceOrphan).toBe(false);
+    expect(stepOf(result.steps, "runtime_cleanup")?.error).toContain("Persistent storage remains");
+    expect(h.deleteHard).not.toHaveBeenCalled();
+    expect(h.clearDeletionInProgress).toHaveBeenCalled();
+  });
+});
+
 describe("teardownProject — deferred multi-target cleanup", () => {
   it("checkpoints a named volume before container cleanup so a failed retry cannot forget it", async () => {
     h.collectProjectManifest

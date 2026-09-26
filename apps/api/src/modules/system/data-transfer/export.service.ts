@@ -1,7 +1,7 @@
 /**
  * Scoped control-plane export. Collects the selected records, lifts each secret's
- * plaintext into a passphrase-sealed bundle, and strips the ciphertext from the
- * payload so the file carries secrets ONLY inside the sealed bundle.
+ * plaintext into a portable bundle and strips source-instance ciphertext from
+ * the database snapshot. Project downloads include readable values by default.
  */
 
 import { readFile, stat } from "node:fs/promises";
@@ -318,12 +318,20 @@ export async function exportInstance(opts: {
   selection?: ExportSelection;
 }): Promise<DataTransferFile> {
   if (env.CLOUD_MODE) throw new CloudInstanceNotTransferableError();
-  if (opts.selection?.includeSecrets === true && !opts.passphrase) {
+  const plaintextProject = opts.selection?.scope === "projects" && !opts.passphrase;
+  if (!plaintextProject && opts.selection?.includeSecrets === true && !opts.passphrase) {
     throw new InvalidExportSelectionError(
       "Set a transfer password to include environment values, keys, and credentials.",
     );
   }
   const prepared = await prepareInstanceExport(opts.selection);
+  if (plaintextProject) {
+    return {
+      ...prepared.file,
+      envelopeVersion: 3,
+      secrets: prepared.secrets ? { ...prepared.secrets, encoding: "plaintext" } : null,
+    };
+  }
   return {
     ...prepared.file,
     secrets:

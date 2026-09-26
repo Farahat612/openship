@@ -7,6 +7,8 @@ import { ProjectSettingsProvider, useProjectSettings } from "@/context/ProjectSe
 import { ProjectMobileTabs, ProjectSidebar } from "./ProjectSidebar";
 import { ProjectTabSections } from "./ProjectTabSections";
 
+const platform = vi.hoisted(() => ({ selfHosted: true }));
+
 vi.mock("@/lib/api", () => ({
   projectsApi: {},
   servicesApi: { list: async () => ({ services: [] }) },
@@ -16,7 +18,9 @@ vi.mock("@/hooks/useProjectEndpoints", () => ({
   PROJECT_INFO_NOT_FOUND: "missing",
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }) }));
-vi.mock("@/context/PlatformContext", () => ({ usePlatform: () => ({ isServerHost: true }) }));
+vi.mock("@/context/PlatformContext", () => ({
+  usePlatform: () => ({ isServerHost: platform.selfHosted, selfHosted: platform.selfHosted }),
+}));
 vi.mock("@/hooks/useLocalhostForward", () => ({
   useLocalhostForward: () => ({ canForward: false }),
 }));
@@ -45,7 +49,7 @@ function Navigation() {
   );
 }
 
-async function render(slug: string, deployTarget: "cloud" | "server" = "server") {
+async function render(slug: string, deployTarget: "cloud" | "server" | "local" = "server") {
   await act(async () =>
     root.render(
       <ProjectSettingsProvider
@@ -73,18 +77,23 @@ function sectionLink(section: string) {
   return link!;
 }
 
-function expectSelected(group: string, section: string) {
+function expectSelected(group: string, section: string, hasSections = true) {
   for (const layout of ["desktop", "mobile"]) {
     const selected = host.querySelectorAll(`[data-layout="${layout}"] a[aria-current="page"]`);
     expect(selected).toHaveLength(1);
     expect(selected[0]?.textContent).toBe(group);
   }
   expect(host.querySelector("output")?.textContent).toBe(section);
-  expect(sectionLink(section).getAttribute("aria-current")).toBe("page");
+  if (hasSections) {
+    expect(sectionLink(section).getAttribute("aria-current")).toBe("page");
+  } else {
+    expect(host.querySelector("nav")).toBeNull();
+  }
 }
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  platform.selfHosted = true;
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -97,6 +106,49 @@ afterEach(async () => {
 });
 
 describe("merged project navigation", () => {
+  it.each(["server", "local"] as const)(
+    "opens Health links under Monitoring and switches between both sections on %s",
+    async (deployTarget) => {
+      await render("health", deployTarget);
+      expectSelected("Monitoring", "health");
+      expect([...host.querySelectorAll("nav a")].map((link) => link.textContent)).toEqual([
+        "Monitoring", "Health",
+      ]);
+      for (const layout of ["desktop", "mobile"]) {
+        expect(host.querySelector(`[data-layout="${layout}"] a[href="/projects/project/health"]`)).toBeNull();
+      }
+
+      await act(async () => sectionLink("monitoring").click());
+      expectSelected("Monitoring", "monitoring");
+      expect(window.location.pathname).toBe("/projects/project/monitoring");
+      await act(async () => sectionLink("health").click());
+      expectSelected("Monitoring", "health");
+      expect(window.location.pathname).toBe("/projects/project/health");
+
+      await render("overview", deployTarget);
+      await render("health", deployTarget);
+      expectSelected("Monitoring", "health");
+    },
+  );
+
+  it.each([
+    { selfHosted: true, deployTarget: "cloud" as const },
+    { selfHosted: false, deployTarget: "cloud" as const },
+    { selfHosted: false, deployTarget: "server" as const },
+  ])("excludes local Health for $deployTarget projects with selfHosted=$selfHosted", async ({ selfHosted, deployTarget }) => {
+    platform.selfHosted = selfHosted;
+    await render("health", deployTarget);
+    expect(host.querySelector("output")?.textContent).toBe("overview");
+    await render("monitoring", deployTarget);
+    expect(host.querySelector("output")?.textContent).toBe("monitoring");
+    expect(host.querySelector("nav")).toBeNull();
+    expect(host.querySelector('a[href="/projects/project/health"]')).toBeNull();
+    for (const layout of ["desktop", "mobile"]) {
+      const selected = host.querySelector(`[data-layout="${layout}"] a[aria-current="page"]`);
+      expect(selected?.textContent).toBe("Monitoring");
+    }
+  });
+
   it.each(["server", "cloud"] as const)(
     "keeps bookmarked Webhooks accessible under Source & Triggers on %s",
     async (deployTarget) => {
@@ -119,26 +171,30 @@ describe("merged project navigation", () => {
     },
   );
 
-  it("keeps Advanced links selected under Settings and Configuration one click away", async () => {
+  it("opens Settings directly without separate Configuration and Advanced tabs", async () => {
     await render("advanced");
-    expectSelected("Settings", "advanced");
-    await act(async () => sectionLink("runtime").click());
-    expectSelected("Settings", "runtime");
-    expect(sectionLink("runtime").textContent).toBe("Configuration");
-    expect(window.location.pathname).toBe("/projects/project/runtime");
-    await act(async () => sectionLink("advanced").click());
-    expectSelected("Settings", "advanced");
-    expect(window.location.pathname).toBe("/projects/project/advanced");
+    expectSelected("Settings", "advanced", false);
+    expect(host.querySelector('a[href="/projects/project/runtime"]')).toBeNull();
+    for (const layout of ["desktop", "mobile"]) {
+      await render("overview");
+      const settings = host.querySelector<HTMLAnchorElement>(
+        `[data-layout="${layout}"] a[href="/projects/project/advanced"]`,
+      );
+      expect(settings?.textContent).toBe("Settings");
+      await act(async () => settings!.click());
+      expectSelected("Settings", "advanced", false);
+      expect(window.location.pathname).toBe("/projects/project/advanced");
+    }
   });
 
   it("follows route changes and preserves older Git, Settings and Build aliases", async () => {
     await render("git");
     expectSelected("Source & Triggers", "source");
     await render("advanced");
-    expectSelected("Settings", "advanced");
-    for (const alias of ["settings", "build"]) {
+    expectSelected("Settings", "advanced", false);
+    for (const alias of ["settings", "build", "runtime"]) {
       await render(alias);
-      expectSelected("Settings", "runtime");
+      expectSelected("Settings", "advanced", false);
     }
     await render("webhooks");
     expectSelected("Source & Triggers", "webhooks");

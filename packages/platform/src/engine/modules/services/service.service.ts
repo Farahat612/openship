@@ -14,8 +14,10 @@ import {
   type ServicePublicEndpoint,
 } from "@repo/db";
 import {
+  AppError,
   aliasConflictsWithSiblings,
   getProjectType,
+  hasRelativeVolumeMounts,
   isValidEnvKey,
   looksLikeSecretKey,
   mergeAdvanced,
@@ -64,6 +66,7 @@ import {
   resolveServerExecutor,
   resolveDeploymentRuntimeForRead,
 } from "../../lib/deployment-runtime";
+import { cloudDockerResources, ensureCloudDockerWorkspace } from "../../lib/cloud-docker-workspace";
 import {
   containerIdForService,
   liveContainerIdWithRuntime,
@@ -79,6 +82,7 @@ import { parseVolumeSpec, type VolumeKind } from "./volume-spec";
 import { sq } from "../migration/direct-transfer";
 import { bounded, duBytes, volumeBytes } from "../migration/migration-size";
 import { deployComposeServices } from "../deployments/compose/deploy.service";
+import type { DeploymentConfigSnapshot } from "../deployments/build.service";
 import { ServiceConfigStaleError, resolveStaleEnvKeysForService } from "../deployments/env-drift";
 import { deploymentWorkload } from "../deployments/deployment-class";
 import {
@@ -100,7 +104,7 @@ import {
   publicEndpointHostname,
   resolveServicePublicEndpoints,
 } from "../../lib/public-endpoints";
-import { resolveRuntimeResources } from "../../lib/resources";
+import { resolveBuildResources, resolveCloudServiceResources, resolveRuntimeResources } from "../../lib/resources";
 import { assertFreeEndpointsAllowed } from "../../lib/free-domain-guard";
 import { assertCloudDeploymentLimits, assertCloudRuntimeLimits, assertPlanAllowsServices, assertRunningServiceQuota } from "../../lib/plan-guard";
 import { env } from "../../config/env";
@@ -2023,7 +2027,8 @@ async function resolveServiceContainer(
 ) {
   const project = await repos.project.findById(projectId);
   assertResourceInOrg(project, "Project", ctx.organizationId, projectId);
-  if (!project.activeDeploymentId) throw new Error("No active deployment");
+  if (project.deletionInProgress) throw new AppError("This project is being deleted.", 409, "PROJECT_DELETING");
+  if (!project.activeDeploymentId) throw new AppError("No active deployment", 409, "SERVICE_NOT_DEPLOYED");
 
   const dep = await findActiveDeployment(project);
   if (!dep) throw new Error("Active deployment not found");
@@ -2048,6 +2053,7 @@ async function resolveServiceContainer(
   const { runtime, serverId } = await resolveDeploymentRuntimeForRead({
     meta: dep.meta,
     organizationId: ctx.organizationId,
+    projectId,
   });
 
   // Live query answered → trust it. No match = the container is genuinely gone,
@@ -2059,7 +2065,7 @@ async function resolveServiceContainer(
       projectId,
       slug: project.slug,
       tracked: row?.containerId ?? null,
-    });
+    }, { requireLiveQuery: !row?.containerId });
   } catch (error) {
     disposeRuntime(runtime);
     throw error;
@@ -2071,7 +2077,7 @@ async function resolveServiceContainer(
   }
   if (!containerId) {
     disposeRuntime(runtime);
-    throw new Error("Service has no running container");
+    throw new AppError("Service has no running container", 409, "SERVICE_NOT_DEPLOYED");
   }
 
   return { runtime, containerId, serverId, row, service: svc };
@@ -2097,11 +2103,10 @@ function containerStatusToServiceState(status: ContainerStatus): ServiceContaine
 }
 
 /**
- * Provision + launch ONE service on its OWN container/workspace, DECOUPLED from
- * the project deploy pipeline: no build phase, no one-deploy-at-a-time lock, no
- * single-app reap. Reuses the compose deploy scoped to this single service, so
- * it takes the exact runtime path (Docker on a server, Oblien workspace on
- * cloud) without touching the main app or the other services.
+ * Launch one image service without a build. Cloud Compose adds a container to
+ * its recorded Docker workspace; native Cloud gives the service its own
+ * workspace. The Compose executor is scoped to this service. Growing a shared
+ * workspace's allocation can restart its other containers.
  */
 async function provisionServiceContainer(
   ctx: RequestContext,
@@ -2124,10 +2129,15 @@ async function provisionServiceContainer(
   const dep = await findActiveDeployment(project);
   if (!dep) throw new Error("Active deployment not found");
 
-  const service = (await repos.service.listByProject(projectId)).find((s) => s.id === serviceId);
+  const services = await repos.service.listByProject(projectId);
+  const service = services.find((s) => s.id === serviceId);
   if (!service) throw new Error("Service not found");
   if (!service.image && !service.build) {
     throw new Error("Service has no image or build configured.");
+  }
+  if (!service.image) {
+    throw new AppError(`"${service.name}" builds from source — use Redeploy to build and start it.`,
+      409, "SERVICE_BUILD_REQUIRED");
   }
   if (!service.enabled) {
     await repos.service.update(serviceId, { enabled: true });
@@ -2144,15 +2154,6 @@ async function provisionServiceContainer(
     ? new Set([serviceId])
     : undefined;
 
-  const resolved = await resolveServicePlatform(project, dep);
-  const runtime = resolved.platform.runtime;
-  if (!isMultiServiceRuntime(runtime)) {
-    disposePlatform(resolved.platform);
-    throw new Error(
-      `The ${runtime.name} runtime cannot run services — enable Docker on this target.`,
-    );
-  }
-
   // Surface the per-service provisioning trace (and any Oblien failure reason)
   // to the API log. A no-op logger here is why cloud add failures were opaque.
   const logger = new BuildLogger((entry) => {
@@ -2162,6 +2163,57 @@ async function provisionServiceContainer(
     if (entry.level === "error" || entry.level === "warn") console.error(tag, line);
     else console.log(tag, line);
   });
+  const snapshot = (dep.meta ?? {}) as DeploymentConfigSnapshot;
+  if (snapshot.cloudDockerWorkspace) {
+    if (snapshot.cloudDockerWorkspace.projectId !== projectId) {
+      throw new AppError("Cloud Docker workspace does not belong to this project", 404, "CLOUD_WORKSPACE_NOT_FOUND");
+    }
+    if (hasRelativeVolumeMounts(service.volumes)) {
+      throw new AppError(`"${service.name}" mounts files from the repository. Use Redeploy to prepare those files and start it in this project's Docker workspace.`,
+        409, "SERVICE_SOURCE_REQUIRED");
+    }
+    // Queue admission holds this same project lock. A queued worker must finish
+    // before Start can resize its host or change its service group.
+    if ((await repos.deployment.listInFlightByProject(projectId)).length > 0) {
+      throw new AppError("A deployment is in progress. Start the new service after it finishes.",
+        409, "DEPLOYMENT_IN_PROGRESS");
+    }
+    await assertCloudDeploymentLimits(ctx.organizationId, {
+      projectId, resources: project.resources as Record<string, unknown> | null, services: [{ ...service, enabled: true }],
+    });
+    const rows = new Map((await repos.service.listByDeployment(dep.id)).map(row => [row.serviceId, row]));
+    const projectResources = resolveRuntimeResources(project.resources as Record<string, unknown> | null, { isCloud: true });
+    await ensureCloudDockerWorkspace({
+      projectId, organizationId: ctx.organizationId,
+      existingWorkspaceId: snapshot.cloudDockerWorkspace.workspaceId,
+      resources: cloudDockerResources({
+        resources: projectResources,
+        buildResources: resolveBuildResources((project.buildResources ?? snapshot.buildResources) as Record<string, unknown> | null, { isCloud: true }),
+        services: services.map(sibling => {
+          const row = rows.get(sibling.id);
+          const allocated = row?.allocatedResources?.containerId === row?.containerId ? row?.allocatedResources : null;
+          const desired = resolveCloudServiceResources(sibling.advanced?.resources, projectResources);
+          return {
+            // A disabled definition may still have a container consuming capacity.
+            enabled: sibling.id === serviceId || sibling.enabled || Boolean(row?.containerId),
+            // Starting this service does not apply a sibling's pending settings.
+            resources: sibling.id !== serviceId && allocated
+              ? { ...desired, cpuCores: allocated.cpuCores, memoryMb: allocated.memoryMb } : desired,
+          };
+        }),
+      }),
+      onProgress: message => logger.log(message),
+    });
+  }
+
+  const resolved = await resolveServicePlatform(project, dep);
+  const runtime = resolved.platform.runtime;
+  if (!isMultiServiceRuntime(runtime)) {
+    disposePlatform(resolved.platform);
+    throw new Error(
+      `The ${runtime.name} runtime cannot run services — enable Docker on this target.`,
+    );
+  }
   try {
     const result = await deployComposeServices(project, dep, runtime, logger, {
       // The project's own caps. Omitting this fell back to the cloud free tier
@@ -2188,19 +2240,20 @@ async function provisionServiceContainer(
       serverId: resolved.serverId ?? undefined,
     });
     const svc = result.services.find((s) => s.serviceId === serviceId);
+    if (svc?.status === "indeterminate" || result.status === "reconciling") {
+      throw new AppError(`Could not confirm that "${service.name}" started. Its saved configuration and data were kept. Retry when the workspace is reachable.`,
+        503, "SERVICE_START_UNVERIFIED");
+    }
     // THIS service's own outcome decides, not the batch's: strict scope carries
     // live siblings forward as successes, so an overall "ready" says nothing
     // about the one service we were asked to start (its container may have
     // crash-looped through the stabilization watch).
     if (result.status === "failed" || svc?.status === "failed") {
-      // A source-built service has no image to launch on the decoupled path
-      // (it only builds through the deploy pipeline) — steer to Redeploy.
-      if (service.build && !service.image) {
-        throw new Error(
-          `"${service.name}" builds from source — use Redeploy to build and start it.`,
-        );
-      }
       throw new Error(svc?.error ?? result.error ?? "Failed to start service");
+    }
+    if (!svc?.containerId && !svc?.staticRoot) {
+      throw new AppError(`"${service.name}" has no confirmed running container. Retry Start or use Redeploy.`,
+        503, "SERVICE_START_UNVERIFIED");
     }
     return { containerId: svc?.containerId ?? "", ip: svc?.ip };
   } finally {
@@ -2212,7 +2265,10 @@ async function provisionServiceContainer(
  * the new provisioning config) before reserving an enabled slot. */
 async function prepareServiceStart(ctx: RequestContext, projectId: string, serviceId: string, allowProvision: boolean) {
   const resolve = () => allowProvision
-    ? resolveServiceContainer(ctx, projectId, serviceId).catch(() => null)
+    ? resolveServiceContainer(ctx, projectId, serviceId).catch(error => {
+        if (error instanceof AppError && ["SERVICE_NOT_DEPLOYED", "CLOUD_WORKSPACE_STOPPED"].includes(error.code ?? "")) return null;
+        throw error;
+      })
     : resolveServiceContainer(ctx, projectId, serviceId);
   if (!env.CLOUD_MODE) return resolve();
   return createProvisionLock(`cloud:service-quota:${ctx.organizationId}`).run(async () => {

@@ -11,6 +11,7 @@ import { pushProjectRulesResolved } from "../route-rules/route-rule.service";
 import { sanitizeSpec, normalizePathPrefix } from "../route-rules/rule-inputs";
 import { domainDependencies } from "../domains/domain.operations";
 import type { AddDomainResult } from "../domains/domain.service";
+import { HEALTH_WATCH_JOB, healthWatchActive } from "../monitoring/health-watch-policy";
 
 async function localProject(ctx: ExecutionContext, id: string) {
   if (env.CLOUD_MODE) throw new NotFoundError("Operation");
@@ -86,12 +87,12 @@ export const projectRoutingOperations: ResourceServices<typeof ProjectRoutingSch
     const deployment = project.activeDeploymentId ? await findActiveDeployment(project) : null;
     const serverId = (deployment?.meta as { serverId?: string } | null)?.serverId;
     const incident = serverId ? await repos.serviceIncident.findOpenForServer(serverId) : null;
-    const job = await repos.job.findByKey("services:health-watch");
+    const job = await repos.job.findByKey(HEALTH_WATCH_JOB);
     return {
       open: rows.filter(row => row.status === "open"),
       resolved: rows.filter(row => row.status !== "open" && (row.resolvedAt?.getTime() ?? 0) >= cutoff),
       historyDays, serverUnreachable: incident?.organizationId === ctx.organizationId ? incident : null,
-      watching: job ? job.enabled : false,
+      watching: healthWatchActive(job),
     };
   },
   async connectDomain(ctx, id, input) {

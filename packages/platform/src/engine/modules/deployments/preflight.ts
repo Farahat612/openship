@@ -36,7 +36,7 @@ import {
   resolveSubAppRecipe,
   type DeployableService,
 } from "../../lib/deployable-service";
-import { isFullyPinned, snapshotNeedsGitSource } from "./pinned-artifacts";
+import { isFullyPinned, snapshotNeedsGitSource, snapshotNeedsProjectSource } from "./pinned-artifacts";
 import { snapshotToClass } from "./deployment-class";
 import { relayConfigEligible, resolveClonePlan } from "./clone-plan";
 import { hasLocalGitIdentity } from "../github/github.local-auth";
@@ -896,7 +896,7 @@ function checkConfig(snapshot: DeploymentConfigSnapshot, opts?: PreflightOptions
     // Docker migration fail preflight with "repository URL or local path".
     // Same rule the build pipeline and the commit resolver use — one definition
     // (pin-aware, so a restored service with a retained image needs no source).
-    const needsProjectSource = snapshotNeedsGitSource(snapshot, opts.composeServices);
+    const needsProjectSource = snapshotNeedsProjectSource(snapshot, opts.composeServices);
     const serviceMissing = needsProjectSource
       ? missing
       : missing.filter((m) => m !== "repository URL or local path" && m !== "branch");

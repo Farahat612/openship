@@ -37,6 +37,7 @@ function setup() {
   };
   const replacement = {
     id: "new-container",
+    rename: vi.fn(async () => { order.push("rename replacement"); }),
     start: vi.fn(async () => { order.push("start replacement"); }),
     stop: vi.fn(async () => { order.push("stop replacement"); }),
     remove: vi.fn(async () => { order.push("remove replacement"); }),
@@ -72,7 +73,7 @@ describe("runtime-only environment apply", () => {
     expect(h.docker.buildImage).not.toHaveBeenCalled();
     const create = h.docker.createContainer.mock.calls[0]![0] as unknown as Dockerode.ContainerCreateOptions;
     expect(create).toMatchObject({
-      name: "openship-demo-api", Image: IMAGE_ID, Env: ["FLAG=new", "PORT=3000"],
+      name: expect.stringMatching(/^openship-demo-api-env-next-/), Image: IMAGE_ID, Env: ["FLAG=new", "PORT=3000"],
       Hostname: "api", Cmd: ["node", "server.js"], Entrypoint: ["entrypoint.sh"], User: "node", WorkingDir: "/app",
       StopSignal: "SIGINT", StopTimeout: 30,
       HostConfig: {
@@ -85,10 +86,11 @@ describe("runtime-only environment apply", () => {
       } } },
     });
     expect(h.original.stop).toHaveBeenCalledWith();
+    expect(h.replacement.rename).toHaveBeenCalledExactlyOnceWith({ name: "openship-demo-api" });
     expect(h.original.remove).toHaveBeenCalledWith();
     expect(h.order).toEqual([
-      "verify image", "stop original", "rename original", "disconnect original",
-      "create replacement", "start replacement", "commit identity", "remove original",
+      "verify image", "create replacement", "stop original", "rename original", "disconnect original",
+      "rename replacement", "start replacement", "commit identity", "remove original",
     ]);
     expect(h.before.Config.Env).toEqual(["FLAG=old", "REMOVE=old", "PORT=3000"]);
   });
@@ -104,9 +106,24 @@ describe("runtime-only environment apply", () => {
     expect(h.options.onReplaced).not.toHaveBeenCalled();
   });
 
-  it.each(["create", "start", "persist"])("restores the original container and routes if %s fails", async stage => {
+  it("keeps the original running when Docker rejects the replacement's network settings", async () => {
     const h = setup();
-    if (stage === "create") h.docker.createContainer.mockRejectedValue(new Error("create failed"));
+    h.docker.createContainer.mockRejectedValue(Object.assign(
+      new Error("user specified IP address is supported only when connecting to networks with user configured subnets"),
+      { statusCode: 400 },
+    ));
+    await expect(h.apply()).rejects.toMatchObject({ code: "SERVICE_ENVIRONMENT_APPLY_FAILED" });
+    expect(h.original.stop).not.toHaveBeenCalled();
+    expect(h.original.rename).not.toHaveBeenCalled();
+    expect(h.network.disconnect).not.toHaveBeenCalled();
+    expect(h.network.connect).not.toHaveBeenCalled();
+    expect(h.original.remove).not.toHaveBeenCalled();
+    expect(h.options.onReplaced).not.toHaveBeenCalled();
+  });
+
+  it.each(["rename", "start", "persist"])("restores the original container and routes if %s fails", async stage => {
+    const h = setup();
+    if (stage === "rename") h.replacement.rename.mockRejectedValue(new Error("rename failed"));
     if (stage === "start") h.replacement.start.mockRejectedValue(new Error("start failed"));
     if (stage === "persist") h.options.onReplaced.mockRejectedValue(new Error("persist failed"));
     await expect(h.apply()).rejects.toMatchObject({ code: "SERVICE_ENVIRONMENT_APPLY_FAILED" });
@@ -114,7 +131,7 @@ describe("runtime-only environment apply", () => {
     expect(h.original.rename).toHaveBeenLastCalledWith({ name: "openship-demo-api" });
     expect(h.network.connect).toHaveBeenCalledWith({ Container: "old-container", EndpointConfig: expect.objectContaining({ IPAMConfig: { IPv4Address: "172.22.0.8" } }) });
     expect(h.original.start).toHaveBeenCalledOnce();
-    if (stage !== "create") expect(h.replacement.remove).toHaveBeenCalledOnce();
+    expect(h.replacement.remove).toHaveBeenCalledOnce();
     if (stage !== "persist") expect(h.options.onReplaced).not.toHaveBeenCalled();
   });
 

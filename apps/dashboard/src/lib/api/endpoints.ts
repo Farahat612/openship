@@ -541,6 +541,7 @@ export const endpoints = {
   issues: {
     open: "issues",
     resolved: "issues?status=resolved",
+    summary: "issues/summary",
     health: "issues/health",
     healthScan: "issues/health/scan",
     rescan: "issues/rescan",
@@ -580,6 +581,8 @@ export const endpoints = {
   /* ---------------------------------------------------------------- */
   backupDestinations: {
     list: "backup-destinations",
+    history: "backup-destinations/history",
+    runs: (id: string) => `backup-destinations/${id}/runs`,
     create: "backup-destinations",
     get: (id: string) => `backup-destinations/${id}`,
     update: (id: string) => `backup-destinations/${id}`,

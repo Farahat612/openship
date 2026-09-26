@@ -19,7 +19,7 @@
  * fails closed when the active artifact is unavailable.
  */
 
-import { classNeedsGitSource } from "@repo/core";
+import { classNeedsGitSource, hasRelativeVolumeMounts } from "@repo/core";
 import { snapshotToClass, type SnapshotClassInput } from "./deployment-class";
 
 /** Structural view of the fields this module reads. `DeploymentConfigSnapshot`
@@ -57,6 +57,9 @@ export interface PinnedArtifactSnapshot extends SnapshotClassInput {
     kind?: string | null;
     build?: unknown;
     dockerfile?: unknown;
+    image?: string | null;
+    volumes?: string[] | null;
+    advanced?: { build?: unknown } | null;
   }>;
 }
 
@@ -121,16 +124,12 @@ export function withoutPinnedArtifacts<T extends PinnedArtifactSnapshot>(snapsho
 }
 
 /**
- * Does this deploy need the repository (clone + token), or is every artifact it
- * would otherwise build already pinned?
- *
- * This is the gate that lets an instant restore run with no git token, no clone
- * and no GitHub access check. It replaces the inline `needsGitSource` block that
- * used to live in build-pipeline, so the single-app and compose answers stay in
- * step: a service is git-free when its image is pinned, and a pinned single-app
- * release is git-free even when the project normally builds.
+ * Does this deploy need the project's repository or uploaded source?
+ * A retained image skips its source build; a relative bind still needs its
+ * configuration files. Inline catalog contexts supply their own files.
+ * The Git-specific wrapper below also excludes uploaded and local sources.
  */
-export function snapshotNeedsGitSource(
+export function snapshotNeedsProjectSource(
   snapshot: PinnedArtifactSnapshot,
   /** Service rows to judge instead of the snapshot's own frozen list — preflight
    *  validates the CURRENT rows, which may have drifted from the snapshot. */
@@ -140,23 +139,30 @@ export function snapshotNeedsGitSource(
   if (pinnedStaticDir(snapshot)) return false;
   const enabled = (services ?? snapshot.composeServices ?? []).filter((s) => s.enabled !== false);
   if (enabled.length > 0) {
+    const inlineSource = enabled.some(s => s.advanced?.build);
     return enabled.some(
       (s) =>
-        (s.kind === "monorepo" || !!s.build || !!s.dockerfile) &&
-        !pinnedImageForService(snapshot, s.name),
+        (!inlineSource && hasRelativeVolumeMounts(s.volumes)) ||
+        (!s.advanced?.build && ((s.kind === "monorepo" && !s.image) || !!s.build || !!s.dockerfile) &&
+          !pinnedImageForService(snapshot, s.name)),
     );
   }
-  // #538-A: the clone decision is purely the SOURCE axis. A Dockerfile app has
-  // hasBuild=false (no buildpack commands) yet its source is a git repo it must
-  // still clone as build context — the old `hasBuild !== false` gate dropped its
-  // token. `source === "git"` is true iff there's a repo to fetch (non-empty
-  // repoUrl, not an upload/release), so a localPath/upload/image deploy stays
-  // git-free and a public repo still resolves anonymously downstream.
+  // A Dockerfile app still needs its source even with hasBuild=false (no
+  // buildpack commands). Uploads/local folders need staging instead of a clone.
   return (
-    classNeedsGitSource(snapshotToClass(snapshot)) &&
+    (classNeedsGitSource(snapshotToClass(snapshot)) || !!snapshot.localPath || !!snapshot.uploadWorkspaceId) &&
     !pinnedAppImage(snapshot) &&
     !refreshAppDeploymentId(snapshot)
   );
+}
+
+/** Source from an upload/local folder still needs staging, but no Git credential. */
+export function snapshotNeedsGitSource(
+  snapshot: PinnedArtifactSnapshot,
+  services?: PinnedArtifactSnapshot["composeServices"],
+): boolean {
+  if (snapshot.localPath || snapshot.uploadWorkspaceId) return false;
+  return snapshotNeedsProjectSource(snapshot, services);
 }
 
 /**
@@ -172,5 +178,5 @@ export function isFullyPinned(
   snapshot: PinnedArtifactSnapshot,
   services?: PinnedArtifactSnapshot["composeServices"],
 ): boolean {
-  return hasPinnedArtifacts(snapshot) && !snapshotNeedsGitSource(snapshot, services);
+  return hasPinnedArtifacts(snapshot) && !snapshotNeedsProjectSource(snapshot, services);
 }

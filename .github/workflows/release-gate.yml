@@ -30,6 +30,10 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  scaling:
+    name: Scaling E2E
+    uses: ./.github/workflows/scaling-e2e.yml
+
   test:
     name: Typecheck + tests
     runs-on: ubuntu-latest
@@ -105,9 +109,10 @@ jobs:
   # daemon answers, which is exactly how these cases sat green-and-unrun for months.
   # With it, an unreachable daemon fails in `beforeAll` instead of reporting skipped.
   #
-  # `fast` is every daemon-level and full-cycle case (~5 min); `heavy` is
+  # `fast` is the ordinary daemon-level and full-cycle cases; `heavy` is
   # rollback-build-restore alone (~225s cold, and fileParallelism is off, so it holds
-  # the whole suite up). Both run here — see E2E_SCOPE in apps/api/vitest.e2e.config.ts.
+  # the whole suite up). Scaling has its own reusable job above.
+  # See E2E_SCOPE in apps/api/vitest.e2e.config.ts.
   e2e-docker:
     name: E2E (real Docker, ${{ matrix.scope }})
     runs-on: ubuntu-latest

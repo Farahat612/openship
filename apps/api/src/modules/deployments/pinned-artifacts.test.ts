@@ -5,6 +5,7 @@ import {
   pinnedImageForService,
   refreshAppDeploymentId,
   snapshotNeedsGitSource,
+  snapshotNeedsProjectSource,
   withoutPinnedArtifacts,
 } from "@repo/platform/engine/modules/deployments/pinned-artifacts";
 
@@ -144,5 +145,38 @@ describe("snapshotNeedsGitSource — the clone / token / GitHub-access gate", ()
     expect(
       snapshotNeedsGitSource({ composeServices: [{ name: "app", dockerfile: "Dockerfile" }] }),
     ).toBe(true);
+  });
+
+  it("requires repository files for image services with relative mounts, including pinned restores", () => {
+    const snapshot = {
+      repoUrl: repo,
+      composeServices: [{ name: "web", image: "nginx:alpine", volumes: ["./config:/etc/nginx:ro"] }],
+      handoverImages: { web: "nginx:alpine" },
+    };
+    expect(snapshotNeedsProjectSource(snapshot)).toBe(true);
+    expect(snapshotNeedsGitSource(snapshot)).toBe(true);
+    expect(snapshotNeedsGitSource({ ...snapshot, composeServices: [{ name: "web", volumes: ["data:/data"] }] })).toBe(false);
+  });
+
+  it("stages uploaded Compose source without asking for a Git credential", () => {
+    const snapshot = { uploadWorkspaceId: "upload-a", composeServices: [{ name: "web", build: "." }] };
+    expect(snapshotNeedsProjectSource(snapshot)).toBe(true);
+    expect(snapshotNeedsGitSource(snapshot)).toBe(false);
+    expect(snapshotNeedsGitSource({ ...snapshot, uploadWorkspaceId: undefined, localPath: "/source" })).toBe(false);
+  });
+
+  it("uses inline catalog files without requiring a project repository", () => {
+    const snapshot = { composeServices: [
+      { name: "web", kind: "monorepo", dockerfile: "Dockerfile", advanced: { build: { dockerfile: "FROM alpine" } } },
+      { name: "sidecar", volumes: ["./web/config:/config:ro"] },
+    ] };
+    expect(snapshotNeedsProjectSource(snapshot)).toBe(false);
+    expect(snapshotNeedsGitSource(snapshot)).toBe(false);
+  });
+
+  it("does not clone for a monorepo service running an existing image", () => {
+    expect(snapshotNeedsGitSource({ repoUrl: repo, composeServices: [
+      { name: "web", kind: "monorepo", image: "nginx:alpine" },
+    ] })).toBe(false);
   });
 });

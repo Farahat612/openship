@@ -108,7 +108,7 @@ export async function applyDockerEnvironment(
   const create: Dockerode.ContainerCreateOptions = {
     ...config,
     ...(sharedNetwork ? {} : { Hostname: hostname }),
-    name,
+    name: `${name}-env-next-${randomUUID().slice(0, 8)}`,
     Image: before.Image,
     Env: splitRuntimeEnv(environment).entries.map(([key, value]) => `${key}=${value}`),
     HostConfig: hostConfig,
@@ -123,6 +123,11 @@ export async function applyDockerEnvironment(
   const disconnected: string[] = [];
   const wasRunning = before.State.Running || before.State.Restarting;
   try {
+    // Docker validates the image, mounts and network configuration at create
+    // time, without starting a second process over the service's volumes. Older
+    // daemons cannot reserve an IP on every user-defined network. Validate that
+    // before stopping the original; the same invalid config would block recovery.
+    replacement = await docker.createContainer(create);
     if (wasRunning) {
       // stop() honors the configured signal/grace period and Docker's default
       // SIGTERM/10s when none was specified. Never force-remove the live app.
@@ -135,7 +140,7 @@ export async function applyDockerEnvironment(
       await docker.getNetwork(network).disconnect({ Container: before.Id });
       disconnected.push(network);
     }
-    replacement = await docker.createContainer(create);
+    await replacement.rename({ name });
     await replacement.start();
     // Docker acknowledges start before PID 1 has read its environment. Catch an
     // immediate startup exit before discarding the recoverable old container.

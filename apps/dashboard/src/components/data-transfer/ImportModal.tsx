@@ -1,7 +1,8 @@
 "use client";
 
+import { Icon as UiIcon } from "@repo/ui/icons";
+
 import { useState } from "react";
-import { Check, DatabaseBackup, Loader2, Upload } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import {
   dataTransferApi,
@@ -41,11 +42,12 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
   const currentKey = JSON.stringify(selection);
   const reviewed = !!preview && reviewedKey === currentKey;
   const hasSelection = selection.scope === "instance" || !!selection.projectIds?.length;
+  const requiresPassphrase = preview?.requiresPassphrase ?? preview?.hasSecrets ?? false;
   const canImport =
     reviewed &&
     hasSelection &&
     !preview.blockers.length &&
-    (!preview.hasSecrets || selection.includeSecrets === false || !!passphrase);
+    (!requiresPassphrase || selection.includeSecrets === false || !!passphrase);
   const patch = (value: Partial<ImportSelection>) =>
     setSelection((current) => ({ ...current, ...value }));
   const reportProgress = (done: number, total: number) => setProgress({ done, total });
@@ -152,7 +154,7 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
       <div className="space-y-5 p-6">
         <div className="flex items-center gap-3 pe-8">
           <div className="rounded-xl bg-primary/10 p-3 text-primary">
-            <DatabaseBackup className="size-5" />
+            <UiIcon name="database-backup" className="size-5" />
           </div>
           <div>
             <h2 className="text-base font-semibold text-foreground">
@@ -166,7 +168,7 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
         {result ? (
           <div className="space-y-4">
             <p className="flex items-center gap-2 text-sm text-foreground">
-              <Check className="size-4 text-success" />
+              <UiIcon name="check" className="size-4 text-success" />
               {result.rowsRestored.toLocaleString()} records and{" "}
               {result.secretsRehydrated.toLocaleString()} credential records restored.
             </p>
@@ -212,7 +214,7 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
             )}
             {busy && (
               <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" />
+                <UiIcon name="spinner" className="size-4 animate-spin" />
                 {progress && progress.done < progress.total
                   ? "Uploading export…"
                   : reviewed
@@ -461,7 +463,7 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
                   onChange={(includeSecrets) => patch({ includeSecrets })}
                   disabled={busy || !preview.hasSecrets}
                 />
-                {preview.hasSecrets && selection.includeSecrets !== false && (
+                {requiresPassphrase && selection.includeSecrets !== false && (
                   <label className="block space-y-1 text-xs font-medium text-foreground">
                     Transfer password
                     <input
@@ -500,7 +502,7 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
                       onClick={() => void apply()}
                       className={transferButtonClass}
                     >
-                      <Upload className="size-4" />
+                      <UiIcon name="upload" className="size-4" />
                       {selection.scope === "instance" && mode === "wipe"
                         ? "Replace instance"
                         : "Import selection"}

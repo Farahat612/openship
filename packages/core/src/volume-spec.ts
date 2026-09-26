@@ -38,6 +38,14 @@ export function parseVolumeMount(raw: string): VolumeMount {
   return { source: parts.join(":"), target, options };
 }
 
+/** These binds need the repository to be prepared before creating a container. */
+export function hasRelativeVolumeMounts(volumes?: readonly string[] | null): boolean {
+  return Boolean(volumes?.some(raw => {
+    const { source } = parseVolumeMount(raw);
+    return source === "." || source === ".." || source.startsWith("./") || source.startsWith("../");
+  }));
+}
+
 export function formatVolumeMount(mount: VolumeMount): string {
   const source = mount.source.trim();
   const target = mount.target.trim();

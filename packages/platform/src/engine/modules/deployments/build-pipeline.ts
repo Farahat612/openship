@@ -6,6 +6,7 @@ import { repos, type Project, type Deployment, type Domain } from "@repo/db";
 import { resolveDeploymentEnvironment } from "./deployment-environment";
 import {
   BUILD_ENV_VARS,
+  AppError,
   safeErrorMessage,
   sanitizeProxySettings,
   normalizeServiceLabel,
@@ -28,7 +29,6 @@ import {
   BareRuntime,
   BuildLogger,
   CloudRuntime,
-  CloudDockerRuntime,
   DockerRuntime,
   STATIC_RELEASE_BASE,
   sharedMountExecutor,
@@ -206,6 +206,11 @@ export async function resolveServicePipelineMode(
   const targetsSpecificServices = (snapshot.targetServiceIds?.length ?? 0) > 0;
 
   if (snapshot.serviceDeploymentMode === "single" && !targetsSpecificServices) {
+    if (snapshot.cloudDockerWorkspace || (project.cloudWorkspaceId &&
+        await repos.cloudDockerWorkspace.find(project.id, project.organizationId))) {
+      throw new AppError("This project uses a shared Docker workspace. Deploy its services to keep the existing containers and data.",
+        409, "CLOUD_DOCKER_SERVICE_MODE_REQUIRED");
+    }
     return { useSingleAppPipeline: true, useServicePipeline: false, servicePreflightServices: [] };
   }
 
@@ -276,11 +281,13 @@ export async function kickoffBuild(project: Project, dep: Deployment): Promise<s
   }
   dep.status = "building";
 
-  sessionManager.createSession(dep.id, project.id);
   const cancellationSignal = registerDeploymentExecution(dep.id);
 
   void (async () => {
     try {
+      // Session admission can fail at capacity. It belongs inside the worker's
+      // failure/lease cleanup so the claimed deployment cannot remain stuck.
+      sessionManager.createSession(dep.id, project.id);
       await executeBuildAndDeploy(project, dep, buildSession.id, cancellationSignal);
     } catch (err) {
       console.error(`[DEPLOY] Fatal error for ${dep.id}:`, err);
@@ -1012,13 +1019,6 @@ async function executeBuildAndDeploy(
     // hasServer=false but must build its OWN image, not the static nginx one —
     // so key strictly off the static workload, not `!hasServer` (issue #538-B).
     buildConfig.isStatic = workload === "static";
-    // Folder-upload cloud deploy: the browser uploaded the source straight into
-    // a pre-provisioned workspace — adopt it and skip clone + transfer. (The
-    // self-hosted upload path instead rides snapshot.localPath, handled above.)
-    if (snapshot.uploadWorkspaceId) {
-      buildConfig.cloudWorkspaceId = snapshot.uploadWorkspaceId;
-      buildConfig.sourceStaged = snapshot.sourceStaged ?? true;
-    }
     // When opted in, the runtime clones on the remote build host instead of the
     // orchestrator transferring the context. The credential arrives either via
     // the relay (gitCredentialHelperPath, set once the relay is open) or the
@@ -1031,15 +1031,6 @@ async function executeBuildAndDeploy(
     // actually running there: on the api-host path this names an identity that
     // isn't ours to use, and the adapter would find no credential at all.
     if (gitCred.ambient && effectiveCloneOnTarget) buildConfig.gitAmbient = gitCred.ambient;
-    if (runtime instanceof CloudDockerRuntime) {
-      const cloudDocker = runtime;
-      if (cancellationSignal) {
-        await cloudDocker.executor.runWithAbortSignal(cancellationSignal, () => cloudDocker.prepareComposeSource(buildConfig, logger));
-      } else {
-        await cloudDocker.prepareComposeSource(buildConfig, logger);
-      }
-      throwIfDeploymentCancelled(cancellationSignal);
-    }
 
     // Desktop git-credential relay opener, shared by the single-app and compose
     // paths. Opens the reverse tunnel + remote helper (nothing persisted on the

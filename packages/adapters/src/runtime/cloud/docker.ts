@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import type { Oblien, Runtime, RoutesInput } from "oblien";
-import { SYSTEM } from "@repo/core";
+import { AppError, SYSTEM } from "@repo/core";
 import { DockerRuntime } from "../docker";
 import { CloudRuntime, type CloudAdminProxy } from "../cloud";
 import { BuildLogger, sq } from "../build-pipeline";
@@ -150,12 +150,28 @@ export class CloudDockerRuntime extends DockerRuntime {
   async prepareComposeSource(config: BuildConfig, logger = new BuildLogger()): Promise<void> {
     this.assertProject(config.projectId);
     if (config.localPath && !this.options.allowHostSource) throw new Error("Cloud builds cannot read source paths on the control-plane host");
+    // Image-only deploys have no checkout. In particular, don't cache an empty
+    // tree before the compose builder supplies an inline catalog context.
+    if (!config.inlineSourceFiles && !config.sourceStaged && !config.localPath && !config.repoUrl) return;
     return this.sourcePromise ??= (async () => {
       await this.canSpend();
       const source = `/tmp/openship-cloud-source-${createHash("sha256").update(config.sessionId).digest("hex").slice(0, 24)}`;
+      const files = config.inlineSourceFiles?.map(file => {
+        if (typeof file.path !== "string" || typeof file.content !== "string" || file.path.includes("\0")) {
+          throw new Error("Invalid inline build source file");
+        }
+        const relative = file.path.replaceAll("\\", "/");
+        const path = posix.resolve(source, relative);
+        if (posix.isAbsolute(relative) || !path.startsWith(`${source}/`)) {
+          throw new Error("Inline build file escapes its source directory");
+        }
+        return { path, content: file.content };
+      });
       await this.executor.mkdir(source);
       try {
-        if (config.sourceStaged && config.cloudWorkspaceId) {
+        if (files) {
+          for (const file of files) await this.executor.writeFile(file.path, file.content);
+        } else if (config.sourceStaged && config.cloudWorkspaceId) {
           const upload = await this.client.workspaces.get(config.cloudWorkspaceId);
           assertDockerWorkspaceOwner(upload, this.options.namespace);
           const from = await this.client.workspace(upload.id).runtime();
@@ -221,14 +237,26 @@ export class CloudDockerRuntime extends DockerRuntime {
     return this.options.provisionLock.run(async () => {
       const ports = [...new Set([...endpoints.map(endpoint => endpoint.port), ...(config.cloudProxyPorts ?? [])])];
       if (ports.some(port => !Number.isInteger(port) || port < 1 || port > 65535)) throw new Error("Invalid cloud service port");
-      const running = await this.docker.listContainers({ all: true });
-      const used = new Set(running.flatMap(container => container.Ports.map(port => port.PublicPort).filter((port): port is number => Boolean(port))));
+      const containers = await this.docker.listContainers({ all: true });
+      const reserved = await Promise.all(containers.map(async container => {
+        if (container.State === "running") return container;
+        // Docker's list response drops published ports for stopped containers.
+        // Shared inspection reads HostConfig.PortBindings too, so a new service
+        // cannot steal a stopped sibling's public endpoint.
+        const info = await super.getContainerInfo(container.Id);
+        return { ...container, Ports: [...container.Ports,
+          ...Object.entries(info.hostPortByContainerPort ?? {}).map(([port, hostPort]) => ({
+            PrivatePort: Number(port), PublicPort: hostPort, Type: "tcp",
+          })),
+        ] };
+      }));
+      const used = new Set(reserved.flatMap(container => container.Ports.map(port => port.PublicPort).filter((port): port is number => Boolean(port))));
       const listeners = await this.executor.exec("ss -H -lnt");
       for (const line of listeners.split("\n")) {
         const port = Number(line.trim().split(/\s+/)[3]?.split(":").pop());
         if (port) used.add(port);
       }
-      const previous = running.find(container => container.Labels["openship.project"] === this.projectId && container.Labels["openship.service"] === config.serviceName);
+      const previous = reserved.find(container => container.Labels["openship.project"] === this.projectId && container.Labels["openship.service"] === config.serviceName);
       const published = new Map<number, number>();
       for (const port of ports) {
         const prior = previous?.Ports.find(binding => binding.PrivatePort === port && binding.Type === "tcp")?.PublicPort;
@@ -374,6 +402,16 @@ export class CloudDockerRuntime extends DockerRuntime {
   async checkSlug(...args: Parameters<CloudRuntime["checkSlug"]>) { return this.cloud.checkSlug(...args); }
   async verifyDomain(...args: Parameters<CloudRuntime["verifyDomain"]>) { return this.cloud.verifyDomain(...args); }
   async getQuota() { return this.cloud.getQuota(); }
+
+  override async listAllContainers() {
+    const workspace = await this.client.workspaces.get(this.workspaceId);
+    assertDockerWorkspaceOwner(workspace, this.options.namespace);
+    if (!isDockerWorkspaceRunning(workspace)) {
+      throw new AppError("The project's Docker workspace is stopped. Start a service or deploy to resume it.",
+        409, "CLOUD_WORKSPACE_STOPPED");
+    }
+    return super.listAllContainers();
+  }
 
   override async getContainerInfo(containerId: string): Promise<ContainerInfo> {
     if (containerId === this.workspaceId) throw new Error("A Docker workspace is not a service container");

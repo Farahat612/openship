@@ -79,6 +79,14 @@ function streamBuildSession(
       if (initialEvent) await sseStream.writeSSE(initialEvent);
       for await (const event of getPlatformKernel().deployments.events(operationContext(c), deploymentId, { since: sinceSeq, signal: abort.signal }))
         await sseStream.writeSSE(event);
+    } catch (error) {
+      // Closing/reconnecting the progress view intentionally aborts its read.
+      // Let real stream failures surface without logging normal disconnects.
+      if (
+        !abort.signal.aborted ||
+        !(error === abort.signal.reason || (error instanceof Error && error.name === "AbortError"))
+      )
+        throw error;
     } finally { abort.abort(); }
   });
 }

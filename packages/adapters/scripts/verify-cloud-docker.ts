@@ -152,6 +152,25 @@ try {
   const internal = await runtime.deployServiceWorkload(group, { ...service, serviceName: "internal", volumes: ["internal:/data"],
     cloudEndpoints: [], publicPort: undefined });
   check("internal service has no published ports", Object.keys(internal.hostPortByContainerPort ?? {}).length === 0);
+  const catalog = await CloudDockerRuntime.forWorkspace(client, {
+    workspaceId, projectId: tag, namespace: tag, provisionLock, publicDomain,
+    resolveRegistryAuth: async () => undefined, adminProxy,
+  });
+  try {
+    const inline = await catalog.build({ ...config, sessionId: `bld_${tag}-inline`, localPath: undefined,
+      rootDirectory: "", dockerfilePath: "catalog/Dockerfile", inlineSourceFiles: [
+        { path: "catalog/Dockerfile", content: 'FROM busybox:1.37\nCOPY catalog/marker /catalog-marker\nCMD ["httpd", "-f", "-p", "8080"]\n' },
+        { path: "catalog/marker", content: "inline-workspace-source" },
+      ] });
+    check("inline catalog builds with API-host source access disabled", inline.status === "deploying" && inline.imageRef);
+    const deployed = await catalog.deployServiceWorkload(group, { ...service, serviceName: "catalog", image: inline.imageRef!,
+      volumes: [], cloudEndpoints: [], publicPort: undefined, advanced: undefined });
+    check("inline catalog files reach the service container", (await (await catalog.inContainerExecutor(deployed.containerId)).exec("cat /catalog-marker")) === "inline-workspace-source");
+    await catalog.destroy(deployed.containerId);
+    await catalog.removeImage(inline.imageRef!);
+  } finally {
+    await catalog.dispose();
+  }
   const shell = await runtime.inContainerExecutor(first.containerId);
   check("service DNS on shared network", (await shell.exec("wget -qO- http://internal:8080")).includes("persistent-v1"));
   await shell.exec("printf 'survives-redeploy' > /data/index.html");
@@ -181,8 +200,21 @@ try {
     (await runtime.getContainerInfo(internal.containerId)).status === "running");
   await runtime.purge({ id: `${tag}-d2`, containerId: superseded.containerId, imageRef: nextBuild.imageRef! } as never);
   check("retention removes only the superseded image", await runtime.docker.getImage(nextBuild.imageRef!).inspect().then(() => false, error => error.statusCode === 404));
+  const beforeEnvironment = await runtime.docker.getContainer(second.containerId).inspect();
+  const applied = await runtime.applyEnvironment(second.containerId, { OPENSHIP_SMOKE_ENV: "applied" }, {
+    projectId: tag, serviceName: "web", onReplaced: async () => {},
+  });
+  second = { ...second, containerId: applied.containerId };
+  const afterEnvironment = await runtime.docker.getContainer(second.containerId).inspect();
+  check("environment apply retains the exact image", afterEnvironment.Image === beforeEnvironment.Image && afterEnvironment.Config.Env.includes("OPENSHIP_SMOKE_ENV=applied"));
+  check("environment apply preserves volumes and siblings", (await (await runtime.inContainerExecutor(second.containerId)).exec("cat /data/index.html")) === "survives-redeploy" &&
+    (await runtime.getContainerInfo(internal.containerId)).status === "running");
   await runtime.stop(second.containerId);
   check("service stop preserves workspace and sibling", isDockerWorkspaceRunning(await client.workspaces.get(workspaceId)) && (await runtime.getContainerInfo(internal.containerId)).status === "running");
+  const stoppedPorts = second.hostPortByContainerPort;
+  second = await runtime.deployServiceWorkload(group, { ...service, deploymentId: `${tag}-stopped-redeploy` });
+  check("redeploying a stopped service retains every published port", JSON.stringify(stoppedPorts) === JSON.stringify(second.hostPortByContainerPort));
+  await runtime.stop(second.containerId);
   await runtime.start(second.containerId);
   check("edge routes applied", routesApplied && !second.routeWarnings?.length);
   const publicText = async (hostname: string) => {
@@ -219,6 +251,16 @@ try {
   }
   check("one workspace for the whole stack", (await client.workspaces.list()).workspaces.length === 1);
 } catch (error) {
+  if (workspaceId) {
+    const workspace = await admin.workspaces.get(workspaceId).catch(() => null);
+    if (workspace) {
+      const provisioning = workspace.provisioning as { state?: string; error?: unknown } | undefined;
+      const info = workspace.info as { status?: string; error?: unknown } | undefined;
+      log("workspace failure details", { workspaceId, status: workspace.status, ready: workspace.ready,
+        provisioningState: provisioning?.state, provisioningError: provisioning?.error,
+        runtimeStatus: info?.status, runtimeError: info?.error });
+    }
+  }
   log("smoke failed", { message: error instanceof Error ? error.message : "Unknown error", code: (error as { code?: string }).code });
   process.exitCode = 1;
 } finally {

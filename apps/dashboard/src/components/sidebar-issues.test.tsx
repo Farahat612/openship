@@ -1,0 +1,255 @@
+// @vitest-environment happy-dom
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { I18nProvider } from "@/components/i18n-provider";
+import { baseDictionary } from "@/i18n";
+import { issuesApi, type IssueCounts } from "@/lib/api/issues";
+import { getActiveOrganizationId, setActiveOrganizationId } from "@/lib/api/client";
+import { useIssueCounts } from "@/hooks/useIssueCounts";
+import { Sidebar } from "./sidebar";
+
+const mocks = vi.hoisted(() => ({
+  summary: vi.fn(),
+  feed: vi.fn(),
+  organization: vi.fn(),
+  projects: vi.fn(),
+}));
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/monitoring",
+  useSearchParams: () => new URLSearchParams(),
+  useRouter: () => ({ push: vi.fn() }),
+}));
+vi.mock("@/lib/auth-client", () => ({
+  authClient: {
+    organization: {
+      list: async () => ({ data: [] }),
+      getFullOrganization: mocks.organization,
+    },
+  },
+  signOut: vi.fn(),
+}));
+vi.mock("@/context/AuthContext", () => ({
+  useAuth: () => ({ user: { id: "user-a", name: "Operator" } }),
+}));
+vi.mock("@/context/CloudContext", () => ({ useCloud: () => ({ connected: false }) }));
+vi.mock("@/context/PlatformContext", () => ({
+  usePlatform: () => ({ selfHosted: true, deployMode: "docker", productView: "platform" }),
+}));
+vi.mock("@/context/MailScopeContext", () => ({ useMailScope: () => ({}) }));
+vi.mock("@/components/mail-server-switcher", () => ({ MailServerSwitcher: () => null }));
+vi.mock("@/components/theme-provider", () => ({
+  useTheme: () => ({ resolvedTheme: "light", toggle: vi.fn() }),
+}));
+vi.mock("@/lib/api/client", async (original) => {
+  const actual = await original<typeof import("@/lib/api/client")>();
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      get: (path: string) => {
+        if (path === "issues/summary") return mocks.summary();
+        if (path === "issues" || path === "issues?status=resolved") return mocks.feed(path);
+        if (path === "projects/home") return mocks.projects();
+        throw new Error(`Unexpected GET ${path}`);
+      },
+    },
+  };
+});
+
+const counts: IssueCounts = { outage: 1, actionRequired: 2, advisory: 5, total: 8 };
+let root: Root;
+let host: HTMLDivElement;
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  mocks.organization.mockResolvedValue({ data: { id: "org-a" } });
+  mocks.summary.mockResolvedValue({ data: counts });
+  mocks.projects.mockResolvedValue({ success: true, projects: [] });
+  host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+});
+afterEach(async () => {
+  await act(async () => root.unmount());
+  host.remove();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+  setActiveOrganizationId(null);
+});
+async function render() {
+  await act(async () =>
+    root.render(
+      <I18nProvider>
+        <Sidebar />
+      </I18nProvider>,
+    ),
+  );
+}
+const monitoring = () => host.querySelector<HTMLAnchorElement>('a[href="/monitoring"]')!;
+const badge = () => monitoring().querySelector(".tabular-nums");
+
+describe("Monitoring sidebar count", () => {
+  it("keeps the distinct project total alongside actionable issues, excluding updates", async () => {
+    mocks.projects.mockResolvedValue({
+      success: true,
+      projects: [{ id: "project-a" }, { id: "project-b", isApp: true }, { id: "project-a" }],
+    });
+    await render();
+    expect(host.querySelector('a[href="/projects"] .tabular-nums')?.textContent).toBe("2");
+    expect(badge()?.textContent).toBe("3");
+    expect(monitoring().textContent).toContain(baseDictionary.dashboard.nav.issues);
+    const collapse = host.querySelector<HTMLButtonElement>(
+      'button[aria-controls="dashboard-sidebar"]',
+    )!;
+    await act(async () => collapse.click());
+    expect(monitoring().getAttribute("aria-label")).toBe("Monitoring: 3 issues");
+    expect(badge()).toBeNull();
+  });
+
+  it("shows no count until the workspace and summary have loaded", async () => {
+    let ready!: (result: { data: { id: string } }) => void;
+    mocks.organization.mockReturnValue(
+      new Promise((resolve) => {
+        ready = resolve;
+      }),
+    );
+    await render();
+    expect(badge()).toBeNull();
+    expect(mocks.summary).not.toHaveBeenCalled();
+    await act(async () => ready({ data: { id: "org-a" } }));
+    expect(badge()?.textContent).toBe("3");
+  });
+
+  it("hides the count when only updates remain and refreshes it as issues change", async () => {
+    await render();
+    mocks.summary.mockResolvedValueOnce({
+      data: { outage: 0, actionRequired: 0, advisory: 5, total: 5 },
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(badge()).toBeNull();
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(badge()?.textContent).toBe("3");
+  });
+
+  it("uses refreshed open-feed counts immediately and ignores resolved history", async () => {
+    await render();
+    mocks.feed.mockResolvedValueOnce({
+      data: [],
+      counts: { outage: 0, actionRequired: 1, advisory: 5, total: 6 },
+      status: "open",
+    });
+    await act(async () => {
+      await issuesApi.list();
+    });
+    expect(badge()?.textContent).toBe("1");
+    mocks.feed.mockResolvedValueOnce({ data: [], counts, status: "resolved" });
+    await act(async () => {
+      await issuesApi.list("resolved");
+    });
+    expect(badge()?.textContent).toBe("1");
+  });
+
+  it("does not let an older summary replace the result of a completed repair", async () => {
+    let finish!: (result: { data: IssueCounts }) => void;
+    mocks.summary.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    await render();
+    mocks.feed.mockResolvedValueOnce({
+      data: [],
+      counts: { outage: 0, actionRequired: 0, advisory: 5, total: 5 },
+      status: "open",
+    });
+    await act(async () => {
+      await issuesApi.list();
+    });
+    await act(async () => finish({ data: counts }));
+    expect(badge()).toBeNull();
+  });
+
+  it("retains known issues during a failed read and skips polling in a hidden tab", async () => {
+    await render();
+    mocks.summary.mockRejectedValueOnce(new Error("Offline"));
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(badge()?.textContent).toBe("3");
+    const requests = mocks.summary.mock.calls.length;
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(mocks.summary).toHaveBeenCalledTimes(requests);
+    visibility.mockReturnValue("visible");
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    expect(mocks.summary).toHaveBeenCalledTimes(requests + 1);
+  });
+});
+
+function Count({ organizationId }: { organizationId: string | null | undefined }) {
+  const result = useIssueCounts(organizationId);
+  return <output>{result ? result.outage + result.actionRequired : "unknown"}</output>;
+}
+async function renderCount(organizationId: string | null | undefined) {
+  setActiveOrganizationId(organizationId ?? null);
+  await act(async () => root.render(<Count organizationId={organizationId} />));
+}
+
+describe("issue count lifecycle", () => {
+  it("waits for workspace selection and rejects responses from the previous workspace", async () => {
+    await renderCount(undefined);
+    expect(host.textContent).toBe("unknown");
+    expect(mocks.summary).not.toHaveBeenCalled();
+    let finish!: (result: { data: IssueCounts }) => void;
+    mocks.summary.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    await renderCount("org-a");
+    let finishFeed!: (result: object) => void;
+    mocks.feed.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishFeed = resolve;
+      }),
+    );
+    const oldFeed = issuesApi.list();
+    mocks.summary.mockResolvedValueOnce({
+      data: { outage: 0, actionRequired: 1, advisory: 0, total: 1 },
+    });
+    await renderCount("org-b");
+    expect(getActiveOrganizationId()).toBe("org-b");
+    expect(host.textContent).toBe("1");
+    await act(async () => {
+      finish({ data: counts });
+      finishFeed({ data: [], counts, status: "open" });
+      await oldFeed;
+    });
+    expect(host.textContent).toBe("1");
+  });
+
+  it("recovers from an initial failure, avoids overlapping reads, and stops when disabled", async () => {
+    mocks.summary.mockRejectedValueOnce(new Error("Offline"));
+    await renderCount(null);
+    expect(host.textContent).toBe("unknown");
+    let finish!: (result: { data: IssueCounts }) => void;
+    mocks.summary.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mocks.summary).toHaveBeenCalledTimes(2);
+    await act(async () => finish({ data: counts }));
+    expect(host.textContent).toBe("3");
+    await renderCount(undefined);
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(mocks.summary).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toBe("unknown");
+  });
+});

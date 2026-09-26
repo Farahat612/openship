@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Oblien } from "oblien";
 import { CloudDockerRuntime } from "./docker";
 import { DockerRuntime } from "../docker";
+import { BuildLogger } from "../build-pipeline";
 import type { MultiServiceDeployConfig, MultiServiceDeployResult } from "../types";
 import { CLOUD_DOCKER_BRIDGE_VERSION } from "./docker-bridge-source";
 import { CloudInfraProvider } from "../../infra/cloud";
@@ -15,7 +16,8 @@ const group = { id: "network-project-a", kind: "docker-network" } as never;
 let runtime: CloudDockerRuntime;
 let status: string;
 let count: number;
-let rows: Array<{ Id: string; Labels: Record<string, string>; Ports: Array<{ PrivatePort: number; PublicPort: number; Type: string }> }>;
+let rows: Array<{ Id: string; State: string; Labels: Record<string, string>; Ports: Array<{ PrivatePort: number; PublicPort: number; Type: string }> }>;
+let stoppedPorts: Map<string, Record<string, Array<{ HostIp: string; HostPort: string }>>>;
 let captures: MultiServiceDeployConfig[];
 let pageRows: Map<string, Record<string, unknown>>;
 let spend: ReturnType<typeof vi.fn<() => Promise<void>>>;
@@ -24,7 +26,7 @@ let pages: Record<string, any>;
 let provider: Record<string, any>;
 let routes: ReturnType<typeof vi.fn<Oblien["routes"]["set"]>>;
 beforeEach(async () => {
-  status = "running"; count = 0; rows = []; captures = []; pageRows = new Map(); spend = vi.fn(); routes = vi.fn();
+  status = "running"; count = 0; rows = []; captures = []; pageRows = new Map(); stoppedPorts = new Map(); spend = vi.fn(); routes = vi.fn();
   ws = {
     get: vi.fn(async () => ({ id: "workspace-a", namespace: "namespace-a", status: "active", info: { status } })),
     start: vi.fn(async () => { status = "running"; }), resume: vi.fn(async () => { status = "running"; }),
@@ -56,6 +58,11 @@ beforeEach(async () => {
   vi.spyOn(runtime.executor, "writeFile").mockResolvedValue();
   vi.spyOn(runtime, "docker", "get").mockReturnValue({
     listContainers: async () => rows,
+    getContainer: (id: string) => ({ inspect: async () => ({
+      State: { Status: "exited", Running: false },
+      HostConfig: { PortBindings: stoppedPorts.get(id) },
+      NetworkSettings: { Ports: {} },
+    }) }),
     getImage: () => ({ inspect: async () => ({ Config: { Volumes: { "/image-data": {} } } }) }),
   } as never);
   vi.spyOn(DockerRuntime.prototype, "deployServiceWorkload").mockImplementation(async (_group, input) => {
@@ -66,7 +73,7 @@ beforeEach(async () => {
     });
     const id = `container-${++count}`;
     rows = rows.filter(row => row.Labels["openship.service"] !== input.serviceName);
-    rows.push({ Id: id, Ports: ports, Labels: { "openship.project": input.projectId, "openship.service": input.serviceName } });
+    rows.push({ Id: id, State: "running", Ports: ports, Labels: { "openship.project": input.projectId, "openship.service": input.serviceName } });
     return { containerId: id, status: "running", hostPortByContainerPort: Object.fromEntries(ports.map(port => [port.PrivatePort, port.PublicPort])) } as MultiServiceDeployResult;
   });
 });
@@ -142,6 +149,20 @@ describe("containers on one Oblien Docker workspace", () => {
     expect(captures[1]!.volumes).toEqual(captures[0]!.volumes);
     expect(ws.delete).not.toHaveBeenCalled();
   });
+  it("reserves a stopped sibling's ports and restores them when that service is redeployed", async () => {
+    const first = await runtime.deployServiceWorkload(group, config);
+    const reservedPort = first.hostPortByContainerPort![8080];
+    const stopped = rows[0]!;
+    stopped.Labels["openship.service"] = "reserved";
+    stopped.State = "exited";
+    stopped.Ports = [];
+    stoppedPorts.set(stopped.Id, { "8080/tcp": [{ HostIp: "0.0.0.0", HostPort: String(reservedPort) }] });
+
+    const added = await runtime.deployServiceWorkload(group, config);
+    expect(added.hostPortByContainerPort![8080]).not.toBe(reservedPort);
+    const restored = await runtime.deployServiceWorkload(group, { ...config, serviceName: "reserved" });
+    expect(restored.hostPortByContainerPort![8080]).toBe(reservedPort);
+  });
   it("keeps unexposed database ports internal and publishes explicit composite targets", async () => {
     await runtime.deployServiceWorkload(group, { ...config, cloudEndpoints: [] });
     expect(captures[0]!.ports).toEqual([]);
@@ -188,6 +209,19 @@ describe("containers on one Oblien Docker workspace", () => {
     expect(ws.start).toHaveBeenCalledOnce();
     expect(start).toHaveBeenCalledWith("container-a");
   });
+  it("distinguishes a stopped workspace from an unavailable inventory without starting either", async () => {
+    status = "stopped";
+    await expect(runtime.listAllContainers()).rejects.toMatchObject({ code: "CLOUD_WORKSPACE_STOPPED" });
+    expect(ws.start).not.toHaveBeenCalled();
+    const failure = Object.assign(new Error("Provider unavailable"), { status: 503 });
+    ws.get.mockRejectedValue(failure);
+    await expect(runtime.listAllContainers()).rejects.toBe(failure);
+    expect(provider.workspaces.create).not.toHaveBeenCalled();
+  });
+  it("refuses another namespace's container inventory", async () => {
+    ws.get.mockResolvedValue({ namespace: "another-namespace", status: "running" });
+    await expect(runtime.listAllContainers()).rejects.toThrow();
+  });
   it("retention and deletion operate on containers, never on their shared VM", async () => {
     const stop = vi.spyOn(DockerRuntime.prototype, "stop").mockResolvedValue();
     const destroy = vi.spyOn(DockerRuntime.prototype, "destroy").mockResolvedValue();
@@ -224,5 +258,39 @@ describe("containers on one Oblien Docker workspace", () => {
   it("does not read a control-plane path supplied as cloud build source", async () => {
     await expect(runtime.prepareComposeSource({ projectId: "project-a", localPath: "/etc" } as never)).rejects.toThrow("control-plane");
     expect(runtime.executor.writeFile).not.toHaveBeenCalled();
+  });
+  it("stages inline source remotely and invokes the shared Docker builder with the cloud executor", async () => {
+    const sharedBuild = vi.spyOn(DockerRuntime.prototype, "buildImages").mockResolvedValue([]);
+    const transfer = vi.spyOn(runtime.executor, "transferIn").mockRejectedValue(new Error("must not read API-host files"));
+    const logger = new BuildLogger();
+    const source = { projectId: "project-a", sessionId: "build-a", repoUrl: "https://github.com/acme/private",
+      rootDirectory: "", inlineSourceFiles: [
+        { path: "web/Dockerfile", content: "FROM alpine\nCOPY web/config /config" },
+        { path: "web/config", content: "configured" },
+      ] } as never;
+    await runtime.buildImages([{ serviceName: "web", config: source, logger }], logger);
+    expect(runtime.executor.writeFile).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/openship-cloud-source-[a-f0-9]+\/web\/config$/), "configured");
+    expect(transfer).not.toHaveBeenCalled();
+    expect(sharedBuild).toHaveBeenCalledExactlyOnceWith([
+      expect.objectContaining({ serviceName: "web", config: expect.objectContaining({
+        cloneOnServer: true, localPath: undefined, staticExtractOnly: false,
+      }) }),
+    ], logger);
+    expect(runtime.connectionOptions?.executor).toBe(runtime.executor);
+    expect(runtime.transport.kind).toBe("cloud");
+  });
+  it("does not let an empty image-only source mask a later inline build context", async () => {
+    const source = { projectId: "project-a", sessionId: "build-a", repoUrl: "" };
+    await runtime.prepareComposeSource(source as never);
+    expect(runtime.executor.exec).not.toHaveBeenCalled();
+    await runtime.prepareComposeSource({ ...source, inlineSourceFiles: [{ path: "web/Dockerfile", content: "FROM alpine" }] } as never);
+    expect(runtime.executor.writeFile).toHaveBeenCalledWith(expect.stringMatching(/\/web\/Dockerfile$/), "FROM alpine");
+  });
+  it.each(["../escape", "/etc/passwd", "..\\escape"])("rejects inline path %s before writing any files", async path => {
+    await expect(runtime.prepareComposeSource({ projectId: "project-a", sessionId: "build-a", inlineSourceFiles: [
+      { path: "web/Dockerfile", content: "FROM alpine" }, { path, content: "invalid" },
+    ] } as never)).rejects.toThrow("escapes");
+    expect(runtime.executor.writeFile).not.toHaveBeenCalled();
+    expect(runtime.executor.exec).not.toHaveBeenCalled();
   });
 });

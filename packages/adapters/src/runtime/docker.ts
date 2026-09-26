@@ -57,6 +57,7 @@ import { relative, sep } from "node:path";
 import { resolveDockerBuildArgs } from "./docker-build-args";
 import { dockerPublishedPortInfo } from "./docker-container-info";
 import { applyDockerEnvironment, type DockerEnvironmentOptions } from "./docker-environment";
+import { DEFAULT_CONTAINER_LOG_CONFIG } from "../container-logging";
 
 /**
  * Detect "not found" errors from the Docker SDK (dockerode). The daemon
@@ -3601,6 +3602,7 @@ export class DockerRuntime implements RuntimeAdapter {
         : {}),
       HostConfig: {
         RestartPolicy: restartPolicy,
+        LogConfig: DEFAULT_CONTAINER_LOG_CONFIG,
         Binds: binds,
         // Join the project's own bridge network as the primary network (mirrors
         // the compose path's NetworkMode: group.id). Egress + loopback publish are
@@ -5589,6 +5591,7 @@ export class DockerRuntime implements RuntimeAdapter {
       ...(ownsProjectEndpoint ? { ExposedPorts: exposedPorts } : {}),
       HostConfig: {
         RestartPolicy: restartPolicy,
+        LogConfig: DEFAULT_CONTAINER_LOG_CONFIG,
         ...dockerResourceLimits(config.resources),
         ...(ownsProjectEndpoint ? { PortBindings: portBindings } : {}),
         Binds: binds,

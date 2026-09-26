@@ -124,13 +124,14 @@ export class LocalGitHubSource implements GitHubSource {
 
   // ── Listing: gh-FIRST → App → user-token ─────────────────────────────────
   async listReposForOwner(owner?: string): Promise<MappedRepository[] | null> {
+    const ghAvailable = this.gh && (await this.gh.status()).available;
     // A deliberately configured local App is authoritative for capability, but
     // the optional local identity may still reveal additional repos. Merge the
     // two so an App-covered repo is tagged `both` (remote-deployable) instead of
     // being mislabeled CLI-only. Cloud-App mode retains its cheap gh-first path
     // and does not add a SaaS round-trip to ordinary browsing.
     if (
-      this.gh &&
+      ghAvailable && this.gh &&
       (getGitHubAuthMode() === "app" ||
         (await hasActiveGitHubSource(this.ctx.organizationId).catch(() => false)))
     ) {
@@ -141,7 +142,7 @@ export class LocalGitHubSource implements GitHubSource {
       ]);
       return mergeRepoSources(appRepos ?? [], cliRepos);
     }
-    if (this.gh) return this.gh.listReposForOwner(owner);
+    if (ghAvailable && this.gh) return this.gh.listReposForOwner(owner);
     const app = await this.app();
     if (app) return app.listReposForOwner(owner);
     // user-token (OAuth/PAT): the user's OWN account must go to /user/repos —
@@ -152,16 +153,18 @@ export class LocalGitHubSource implements GitHubSource {
   }
 
   async getHome(): Promise<GitHubHome> {
+    const ghStatus = this.gh
+      ? await this.gh.status()
+      : { available: false, method: null } as const;
     if (
-      this.gh &&
+      this.gh && ghStatus.available &&
       (getGitHubAuthMode() === "app" ||
         (await hasActiveGitHubSource(this.ctx.organizationId).catch(() => false)))
     ) {
       const app = await this.app();
       if (app) {
-        const [appHome, ghStatus, cliRepos, cliAccounts] = await Promise.all([
+        const [appHome, cliRepos, cliAccounts] = await Promise.all([
           app.getHome(),
-          this.gh.status(),
           this.gh.listAllRepos(),
           this.gh.listOwners(),
         ]);
@@ -189,31 +192,36 @@ export class LocalGitHubSource implements GitHubSource {
     }
     // gh-FIRST: a LOCAL read, ZERO cloud. We never call app() here — the App's
     // connection status is surfaced separately by the Settings card.
-    if (this.gh) {
-      const status = await this.gh.status();
+    if (this.gh && ghStatus.available) {
       const [repos, accounts] = await Promise.all([this.gh.listAllRepos(), this.gh.listOwners()]);
       const state: GitHubConnectionState = {
         sources: {
           openshipApp: { connected: false },
-          // `available` is pinned true on this path: the gh sub-source only
-          // exists because a token was resolved at construction, and the library
-          // is already committed to `primary: "gh-cli"` below. Left as-is (a
-          // failed verify here yields an empty repo list rather than an error),
-          // but the probe's method/problem now ride along either way.
-          ghCli: { ...ghCliState(status), available: true },
+          ghCli: ghCliState(ghStatus),
         },
         primary: "gh-cli",
       };
       return { state, accounts, repos };
     }
 
-    // No gh → App home (installations) when the App is present.
+    // Missing/rejected gh → App home. Keep the failing credential's health in
+    // the response so Settings can offer repair while the library uses the App.
     const app = await this.app();
-    if (app) return app.getHome();
+    if (app) {
+      const home = await app.getHome();
+      return {
+        ...home,
+        state: { ...home.state, sources: { ...home.state.sources, ghCli: ghCliState(ghStatus) } },
+      };
+    }
 
     // Neither → user-token (OAuth/PAT) home, or the empty shell when nothing
     // is connected at all.
     const state = await getGitHubConnectionState(this.ctx);
+    if (this.gh) {
+      state.sources.ghCli = ghCliState(ghStatus);
+      state.primary = state.sources.openshipApp.connected ? "openship-app" : null;
+    }
     if (state.primary === null) return { state, accounts: [], repos: [] };
     const repos = await listUserOwnedRepos(this.ctx);
     return { state, accounts: [], repos };

@@ -10,6 +10,9 @@
 
 import { describe, test, expect } from "vitest";
 import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
+import { tbValidator } from "@hono/typebox-validator";
+import { Type } from "@sinclair/typebox";
 import { handleApiError } from "@/middleware/error-handler";
 import { AppError, OperationError } from "@repo/contracts";
 
@@ -25,6 +28,23 @@ function makeApp() {
 }
 
 describe("handleApiError — malformed JSON body", () => {
+  test("preserves 400 from a schema-validated route with a malformed body", async () => {
+    const app = makeApp();
+    app.post("/validated", tbValidator("json", Type.Object({ healthOnly: Type.Optional(Type.Boolean()) })), c => c.json({ ok: true }));
+    const response = await app.request("/validated", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{" });
+    expect(response.status).toBe(400);
+    expect(await response.text()).toMatch(/json/i);
+  });
+
+  test("preserves an explicit client error response and its headers", async () => {
+    const app = makeApp();
+    app.get("/limited", () => { throw new HTTPException(429, { res: new Response("Try later", { status: 429, headers: { "Retry-After": "60" } }) }); });
+    const response = await app.request("/limited");
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("60");
+    expect(await response.text()).toBe("Try later");
+  });
+
   test("exposes explicit operation recovery details while keeping canonical error fields authoritative", async () => {
     const app = makeApp();
     app.get("/failure", () => {

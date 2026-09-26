@@ -1,5 +1,7 @@
 "use client";
 
+import { Icon as UiIcon } from "@repo/ui/icons";
+
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useProjectSettings } from "@/context/ProjectSettingsContext";
@@ -10,40 +12,6 @@ import { AppLogo } from "@/components/AppLogo";
 import { DomainSwitcher } from "@/components/routing/DomainSwitcher";
 import { formatDate } from "@/utils/date";
 import { ProjectStatusBadge } from "@/components/shared/ProjectStatusBadge";
-import {
-  LayoutDashboard,
-  Activity,
-  Globe,
-  Rocket,
-  GitBranch,
-  Wrench,
-  ScrollText,
-  Layers,
-  ExternalLink,
-  DatabaseBackup,
-  Plus,
-  HeartPulse,
-  MonitorSmartphone,
-  Waypoints,
-} from "lucide-react";
-
-const TAB_ICONS: Record<
-  string,
-  React.ComponentType<{ className?: string; strokeWidth?: number }>
-> = {
-  overview: LayoutDashboard,
-  topology: Waypoints,
-  monitoring: Activity,
-  services: Layers,
-  domains: Globe,
-  deployments: Rocket,
-  health: HeartPulse,
-  source: GitBranch,
-  runtime: Wrench,
-  settings: Wrench,
-  logs: ScrollText,
-  backup: DatabaseBackup,
-};
 
 /**
  * Domains tab needs attention when routing failed but the deploy still
@@ -134,7 +102,7 @@ export const ProjectSidebar = () => {
               </div>
             )}
             <div className="min-w-0">
-              <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
                 {t.projects.sidebar.project}
               </p>
               <div className="mt-2 flex items-center gap-2">
@@ -151,7 +119,7 @@ export const ProjectSidebar = () => {
                     })}
                     className="shrink-0 text-muted-foreground transition-colors hover:text-primary"
                   >
-                    <ExternalLink className="size-3.5" />
+                    <UiIcon name="arrow-up-right" className="size-3.5" />
                   </a>
                 )}
               </div>
@@ -186,7 +154,7 @@ export const ProjectSidebar = () => {
                   aria-label={t.projects.sidebar.open}
                   className="shrink-0 text-muted-foreground transition-colors hover:text-primary"
                 >
-                  <ExternalLink className="size-3 shrink-0" />
+                  <UiIcon name="arrow-up-right" className="size-3 shrink-0" />
                 </a>
               </div>
             ) : (
@@ -204,7 +172,7 @@ export const ProjectSidebar = () => {
                     aria-label={t.projects.connections.openLocalhost}
                     className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
                   >
-                    <MonitorSmartphone className={openingLocal ? "size-3.5 animate-pulse" : "size-3.5"} />
+                    <UiIcon name="devices" className={openingLocal ? "size-3.5 animate-pulse" : "size-3.5"} />
                     {t.projects.connections.openShort}
                   </button>
                 ) : (
@@ -212,17 +180,19 @@ export const ProjectSidebar = () => {
                     {t.projects.sidebar.noDomain}
                   </span>
                 )}
-                <button
-                  type="button"
-                  onClick={() => {
+                <Link
+                  href={`/projects/${projectData.id}/domains`}
+                  onClick={(event) => {
+                    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                    event.preventDefault();
                     setPendingDomainAction("add");
                     handleTabChange("domains");
                   }}
                   className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-primary transition-opacity hover:opacity-80"
                 >
-                  <Plus className="size-3.5" />
+                  <UiIcon name="plus" className="size-3.5" />
                   {t.projects.sidebar.addDomain}
-                </button>
+                </Link>
               </div>
             )}
           </div>
@@ -240,7 +210,7 @@ export const ProjectSidebar = () => {
       <div className="bg-card rounded-2xl border border-border/50 p-3">
         <div className="space-y-1">
           {tabs.map((tab) => {
-            const Icon = TAB_ICONS[tab.id] || LayoutDashboard;
+            const Icon = tab.icon;
             const isActive = activeTabGroup === tab.id;
             return (
               <Link
@@ -254,13 +224,9 @@ export const ProjectSidebar = () => {
                   e.preventDefault();
                   handleTabChange(tab.id);
                 }}
-                className={`w-full flex items-center gap-3 rounded-xl px-3 py-2.5 text-[14px] font-medium transition-colors ${
-                  isActive
-                    ? "bg-foreground/[0.07] text-foreground"
-                    : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground"
-                }`}
+                className="th-nav-item w-full flex items-center gap-3 rounded-xl px-3 py-2.5 text-[14px] font-medium transition-colors"
               >
-                <Icon className="size-[17px] shrink-0" strokeWidth={1.7} />
+                <UiIcon name={Icon} className="size-5 shrink-0" />
                 {tab.label}
                 {tab.id === "domains" && domainsAttention && (
                   <span
@@ -291,7 +257,7 @@ export const ProjectMobileTabs = () => {
     <div className="lg:hidden sticky top-0 z-30 bg-background/80 backdrop-blur-md border-b border-border/40 -mx-4 px-4 sm:-mx-6 sm:px-6">
       <div className="flex items-center gap-1 overflow-x-auto py-2.5 scrollbar-hide">
         {tabs.map((tab) => {
-          const Icon = TAB_ICONS[tab.id] || LayoutDashboard;
+          const Icon = tab.icon;
           const isActive = activeTabGroup === tab.id;
           return (
             <Link
@@ -303,13 +269,9 @@ export const ProjectMobileTabs = () => {
                 e.preventDefault();
                 handleTabChange(tab.id);
               }}
-              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-[13px] font-medium whitespace-nowrap transition-colors ${
-                isActive
-                  ? "bg-foreground/[0.07] text-foreground"
-                  : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground"
-              }`}
+              className="th-nav-item flex items-center gap-2 px-3 py-2 rounded-xl text-[13px] font-medium whitespace-nowrap transition-colors"
             >
-              <Icon className="size-4 shrink-0" strokeWidth={1.7} />
+              <UiIcon name={Icon} className="size-4 shrink-0" />
               {tab.label}
               {tab.id === "domains" && domainsAttention && (
                 <span

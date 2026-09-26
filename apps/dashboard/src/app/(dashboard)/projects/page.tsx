@@ -1,5 +1,7 @@
 "use client";
 
+import { Icon as UiIcon } from "@repo/ui/icons";
+
 import { useState, useEffect, useRef, useMemo } from "react";
 import Link from "next/link";
 import { Project } from "@/constants/mock";
@@ -18,7 +20,6 @@ import { projectsApi } from "@/lib/api";
 import { updatesApi } from "@/lib/api/updates";
 import { useRouter } from "next/navigation";
 import { useI18n, interpolate } from "@/components/i18n-provider";
-import { Plus, Search, Server } from "lucide-react";
 import { PageContainer } from "@/components/ui/PageContainer";
 import { HelpMenu } from "@/components/HelpMenu";
 import { usePlatform } from "@/context/PlatformContext";
@@ -99,7 +100,7 @@ export default function ProjectsPage() {
             <h1 className="text-2xl font-medium text-foreground/80" style={{ letterSpacing: "-0.2px" }}>
               {t.dashboard.pages.projects.title}
             </h1>
-            <p className="text-sm text-muted-foreground mt-1">
+            <p className="text-sm text-muted-foreground/70 mt-1">
               {isLoading
                 ? t.projects.list.loading
                 : interpolate(
@@ -114,7 +115,7 @@ export default function ProjectsPage() {
               href="/library"
               className="inline-flex flex-1 items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-medium transition-all hover:bg-primary/90 hover:shadow-lg hover:shadow-primary/25 hover:-translate-y-0.5 sm:flex-none justify-center"
             >
-              <Plus className="size-4" />
+              <UiIcon name="plus" className="size-4" />
               <span>{t.dashboard.pages.projects.createButton}</span>
             </Link>
             <HelpMenu />
@@ -150,7 +151,7 @@ export default function ProjectsPage() {
                   broken rather than intentionally empty. */}
               <div className="flex min-w-0 items-center gap-3 lg:col-start-1 lg:row-start-1">
                 <div className="relative min-w-0 flex-1">
-                  <Search className="absolute start-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+                  <UiIcon name="search" className="absolute start-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
                   <input
                     type="text"
                     placeholder={t.dashboard.pages.projects.searchPlaceholder}
@@ -168,7 +169,7 @@ export default function ProjectsPage() {
               <div className="min-w-0 lg:col-start-1 lg:row-start-2">
                 {filteredProjects.length > 0 ? (
                   view === "grid" ? (
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+                    <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,20rem),1fr))] gap-3">
                       {filteredProjects.map((project) => (
                         <ProjectGridCard key={project.id} project={project} preferAppLogo updateAvailable={updatesBehind.has(project.id)} />
                       ))}
@@ -184,7 +185,7 @@ export default function ProjectsPage() {
                   <div className="flex min-h-[380px] flex-col items-center justify-center px-6 py-12 text-center">
                     <ProjectIllustration className="relative mx-auto mb-6 h-40 w-56" />
                     {searchQuery ? (
-                      <p className="mx-auto max-w-sm text-sm text-muted-foreground">
+                      <p className="mx-auto max-w-sm text-sm text-muted-foreground/70">
                         {t.dashboard.pages.projects.noResultsFound.replace("{query}", searchQuery)}
                       </p>
                     ) : (
@@ -195,7 +196,7 @@ export default function ProjectsPage() {
                         {/* No CTA button here — the page header already owns the
                             primary "Create Project" action, and the right card
                             owns "Connect a server". This copy just points to both. */}
-                        <p className="mx-auto max-w-sm text-sm leading-relaxed text-muted-foreground">
+                        <p className="mx-auto max-w-sm text-sm leading-relaxed text-muted-foreground/70">
                           {t.projects.list.noTargetDesc}
                         </p>
                       </>
@@ -213,12 +214,12 @@ export default function ProjectsPage() {
                 {!hasServers && (
                   <div className="bg-card rounded-2xl border border-border/50 p-5">
                     <div className="w-9 h-9 bg-info-bg rounded-xl flex items-center justify-center mb-3">
-                      <Server className="size-[18px] text-info" />
+                      <UiIcon name="server" className="size-[18px] text-info" />
                     </div>
                     <h3 className="font-semibold text-foreground text-sm mb-1">
                       {t.projects.serverCta.title}
                     </h3>
-                    <p className="text-xs text-muted-foreground mb-3 leading-relaxed">
+                    <p className="text-xs text-muted-foreground/70 mb-3 leading-relaxed">
                       {t.projects.serverCta.description}
                     </p>
                     {/* SSH servers are a self-hosted/desktop capability — the SaaS
@@ -229,7 +230,7 @@ export default function ProjectsPage() {
                         href="/servers/new"
                         className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-muted/50 text-foreground text-[13px] font-medium transition-colors hover:bg-muted"
                       >
-                        <Plus className="size-3.5" />
+                        <UiIcon name="plus" className="size-3.5" />
                         {t.projects.serverCta.button}
                       </Link>
                     ) : (
@@ -239,7 +240,7 @@ export default function ProjectsPage() {
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-muted/50 text-foreground text-[13px] font-medium transition-colors hover:bg-muted"
                       >
-                        <Plus className="size-3.5" />
+                        <UiIcon name="plus" className="size-3.5" />
                         {t.projects.serverCta.button}
                       </a>
                     )}

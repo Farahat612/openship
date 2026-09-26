@@ -53,6 +53,7 @@ export async function ensureSystemJob(key: string): Promise<Job> {
     key: def.key,
     label: def.label,
     defaultCron: def.defaultCron,
+    defaultEnabled: def.defaultEnabled?.() ?? true,
   });
 }
 
@@ -67,6 +68,7 @@ async function syncJob(row: Job): Promise<boolean> {
   // built-in runnable somewhere its registry definition says it is unavailable.
   if (systemJobAvailability(row.key) === "unavailable") {
     await runner.removeRecurring(row.key);
+    await SYSTEM_JOB_BY_KEY.get(row.key)?.onDisabled?.();
     return false;
   }
   const recurring =
@@ -76,6 +78,7 @@ async function syncJob(row: Job): Promise<boolean> {
     validateCronExpression(row.cronExpression).valid;
   if (!recurring) {
     await runner.removeRecurring(row.key);
+    await SYSTEM_JOB_BY_KEY.get(row.key)?.onDisabled?.();
     return false;
   }
   // Custom command jobs run their own streaming executor per tick (reads the
@@ -117,6 +120,7 @@ export async function reconcileJobs(): Promise<{ registered: number; total: numb
       // Not applicable here (e.g. ssl:renew off self-hosted) — ensure it isn't
       // scheduled. The row (if any from a prior mode) is left but unscheduled.
       await runner.removeRecurring(def.key);
+      await def.onDisabled?.();
       continue;
     }
     await ensureSystemJob(def.key);

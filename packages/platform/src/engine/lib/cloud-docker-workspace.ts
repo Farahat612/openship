@@ -71,20 +71,28 @@ export function cloudDockerResources(input: {
  * and idempotency key, then attach its id before waiting for the VM to boot. */
 export async function ensureCloudDockerWorkspace(input: {
   projectId: string; organizationId: string; resources: ResourceConfig; signal?: AbortSignal;
+  /** Service actions must reuse their recorded host, never provision a replacement. */
+  existingWorkspaceId?: string;
   onProgress?: (message: string) => void;
 }): Promise<NonNullable<DeploymentMeta["cloudDockerWorkspace"]>> {
   return createProvisionLock(`cloud:docker-project:${input.projectId}`).run(async () => {
     input.signal?.throwIfAborted();
     const project = await repos.project.findByIdInOrganization(input.projectId, input.organizationId);
     if (!project || project.deletedAt || project.deletionInProgress) throw new AppError("Project not found", 404, "PROJECT_NOT_FOUND");
+    const existing = input.existingWorkspaceId !== undefined
+      ? await repos.cloudDockerWorkspace.find(input.projectId, input.organizationId) : undefined;
+    if (input.existingWorkspaceId !== undefined && (!existing || existing.workspaceId !== input.existingWorkspaceId)) {
+      throw new AppError("Cloud Docker workspace does not belong to this project", 404, "CLOUD_WORKSPACE_NOT_FOUND");
+    }
     if (env.CLOUD_MODE) await assertCloudCanSpend(input.organizationId);
     const credentials = env.CLOUD_MODE ? await issueNamespaceToken(input.organizationId) : await getOrgCloudToken(input.organizationId);
     if (!credentials) throw new AppError("Connect Openship Cloud before deploying", 503, "CLOUD_NOT_CONNECTED");
     const { namespace, token } = credentials;
     const client = new Oblien({ token, baseUrl: env.OBLIEN_API_URL });
-    const binding = await repos.cloudDockerWorkspace.reserve({
+    const binding = existing ?? await repos.cloudDockerWorkspace.reserve({
       projectId: input.projectId, namespace, image: CLOUD_DOCKER_IMAGE, resources: input.resources,
     }, input.organizationId);
+    if (binding.namespace !== namespace) throw new Error("Cloud workspace namespace binding does not match this project");
     let workspaceId = binding.workspaceId;
     if (!workspaceId) {
       if (project.cloudWorkspaceId) throw new Error("An existing native workspace must be migrated before enabling Docker");
@@ -119,7 +127,16 @@ export async function ensureCloudDockerWorkspace(input: {
     if (current.namespace !== namespace) throw new Error("Cloud workspace namespace changed");
     input.signal?.throwIfAborted();
     const status = cloudWorkspaceStatus(current);
-    if (status === "stopped") await ws.start();
+    const provisioning = current.provisioning as { state?: string } | undefined;
+    if (binding.state === "provisioning" && provisioning?.state === "failed") {
+      // Only initial creation is retryable here. A host that already held
+      // customer containers must never go through creation again.
+      input.onProgress?.("Retrying the Docker workspace's initial provisioning with its existing disk.\n");
+      const retried = await client.workspaces.retryCreation(workspaceId);
+      if (retried.id !== workspaceId || retried.namespace !== namespace) {
+        throw new Error("Cloud provisioning retry returned an unexpected workspace");
+      }
+    } else if (status === "stopped") await ws.start();
     else if (status === "paused" || status === "suspended") await ws.resume();
     const ready = await waitForCloudDockerWorkspace(client, workspaceId, namespace, { signal: input.signal });
     // Permanence precedes the first container/volume write; a failed later build

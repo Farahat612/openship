@@ -161,6 +161,26 @@ describe("tokenFor — self-hosted local (gh-cli → app → project → user-pa
     expect(await tokenFor(ctxNoOrg, "local", withOwner)).toEqual({ token: "apptok", source: "app-installation" });
   });
 
+  it("skips a rejected source in both resolution and availability checks", async () => {
+    setGh("rejected-gh-token");
+    setApp(true);
+    const target = { ...withOwner, exclude: ["gh-cli" as const] };
+    expect(await tokenFor(ctxNoOrg, "local", target)).toEqual({ token: "apptok", source: "app-installation" });
+    expect(await canResolveTokenFor(ctxNoOrg, "local", target)).toBe("app-installation");
+    expect(getLocalGhToken).not.toHaveBeenCalled();
+    expect(canUseGitHubRepo).toHaveBeenCalledWith(ctxNoOrg, expect.objectContaining({ owner: "acme", repo: "app" }), "read", expect.anything());
+  });
+
+  it("exclusions cannot expand a pinned credential or bypass a denied App grant", async () => {
+    setGh("ghtok");
+    setApp(false);
+    expect(await tokenFor(ctxOrg, "local", { ...withOwner, exclude: ["gh-cli"] })).toBeNull();
+    setApp(true);
+    expect(await tokenFor(ctxOrg, "local", { ...withOwner, only: ["gh-cli"], exclude: ["gh-cli"] })).toBeNull();
+    expect(await canResolveTokenFor(ctxOrg, "local", { ...withOwner, only: ["gh-cli"], exclude: ["gh-cli"] })).toBeNull();
+    expect(ghAuth.getInstallationToken).not.toHaveBeenCalled();
+  });
+
   it("project PAT wins once gh + App are absent", async () => {
     setProjectPat("projtok");
     setSettings({ userPat: "usertok" });

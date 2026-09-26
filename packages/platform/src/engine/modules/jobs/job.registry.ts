@@ -29,6 +29,7 @@ import { scanInstanceUpdates } from "@repo/platform/engine/modules/updates/updat
 import { scanInstanceModules } from "@repo/platform/engine/modules/system/server-modules.service";
 import { scanInstanceContainers } from "@repo/platform/engine/modules/system/server-containers.service";
 import { runHealthWatch, pruneResolvedIncidents } from "@repo/platform/engine/modules/monitoring/health-watch";
+import { containerHealthSupported, HEALTH_WATCH_JOB } from "../monitoring/health-watch-policy";
 import { runUsageSampleSweep } from "@repo/platform/engine/modules/monitoring/usage-sampler";
 import { runAnalyticsScrapeSweep } from "@repo/platform/engine/modules/system/analytics-scraper";
 import { runDueOnceJobs } from "@repo/platform/engine/modules/jobs/job-command";
@@ -43,6 +44,10 @@ export interface SystemJobDef {
   /** Platform gate — when false the job isn't seeded/scheduled here (e.g. SSL
    *  renewal only on self-hosted certbot installs). Defaults available. */
   available?: () => boolean;
+  /** Initial preference only; boot reconciliation preserves operator changes. */
+  defaultEnabled?: () => boolean;
+  /** Release resources held between ticks when this job is unscheduled. */
+  onDisabled?: () => Promise<void>;
 }
 
 const WEBHOOK_EVENT_RETENTION_DAYS = 30;
@@ -360,7 +365,7 @@ export const SYSTEM_JOB_DEFS: SystemJobDef[] = [
     },
   },
   {
-    key: "services:health-watch",
+    key: HEALTH_WATCH_JOB,
     label: "Container health watch",
     // Every minute. This is the ONLY thing that notices a container died after
     // its deploy window closed, and detection latency is roughly two ticks (a
@@ -368,16 +373,21 @@ export const SYSTEM_JOB_DEFS: SystemJobDef[] = [
     // feature. Cheap by construction: one `docker ps -a` per server, and no DB
     // writes at all on a tick where nothing is wrong.
     defaultCron: "* * * * *",
-    // Cloud workloads run on Oblien, whose runtime exposes no stability probe;
-    // desktop has no always-on process to poll from.
-    available: () => platform().target === "selfhosted",
+    // Enabled by default on supported installations. Desktop checks run while
+    // Openship is running; saved disable/schedule choices survive reconciliation.
+    // Cloud workloads are excluded here and by the scanner's target resolution.
+    available: containerHealthSupported,
+    onDisabled: async () => {
+      const { stopAllContainerEventWatchers } = await import("../monitoring/container-events");
+      await stopAllContainerEventWatchers();
+    },
     run: async () => runHealthWatch(),
   },
   {
     key: "incidents:prune",
     label: "Incident history prune",
     defaultCron: "51 4 * * *",
-    available: () => platform().target === "selfhosted",
+    available: containerHealthSupported,
     run: async () => pruneResolvedIncidents(),
   },
   {

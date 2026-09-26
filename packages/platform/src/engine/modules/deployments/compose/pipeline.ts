@@ -309,6 +309,7 @@ export async function executeComposePipeline(opts: ComposePipelineOpts): Promise
     cloneOnServer,
     targetServiceIds,
     refreshServiceIds,
+    signal: opts.signal,
   });
 
   // Cancelled during the image phase: stop here. setDeploymentStatus below has no

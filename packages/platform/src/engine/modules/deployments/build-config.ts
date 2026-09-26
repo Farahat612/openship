@@ -19,6 +19,8 @@ export interface BuildConfigSnapshotLike {
   hasServer: boolean;
   hasBuild: boolean;
   localPath?: string;
+  uploadWorkspaceId?: string;
+  sourceStaged?: boolean;
   buildStrategy?: BuildStrategy;
   /** ONE-TIME image handover (migration cutover): serviceName → an already-present
    *  image ref (a transferred / running container's image). A service listed here
@@ -73,6 +75,10 @@ export function createBuildConfig(opts: BuildConfigFactoryOptions): BuildConfig 
     branch: dep.branch,
     commitSha: dep.commitSha ?? undefined,
     localPath: snapshot.localPath,
+    ...(snapshot.uploadWorkspaceId ? {
+      cloudWorkspaceId: snapshot.uploadWorkspaceId,
+      sourceStaged: snapshot.sourceStaged ?? true,
+    } : {}),
     buildStrategy: snapshot.buildStrategy,
     stack: snapshot.framework,
     buildImage: snapshot.buildImage,

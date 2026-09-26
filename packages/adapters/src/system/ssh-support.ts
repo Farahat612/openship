@@ -14,7 +14,8 @@ import type { SshConfig } from "../types";
 import { systemDebug } from "./debug";
 
 function formatSshTarget(config: SshConfig): string {
-  return `${config.username ?? "root"}@${config.host}:${config.port ?? 22}`;
+  const target = `${config.username ?? "root"}@${config.host}`;
+  return config.sshTransport === "cloudflare" ? `${target} (Cloudflare Access)` : `${target}:${config.port ?? 22}`;
 }
 
 /**
@@ -90,8 +91,16 @@ export function describeSshConnectFailure(config: SshConfig, originalMessage: st
     );
   }
 
+  if (config.sshTransport === "cloudflare") {
+    return (
+      `Cannot reach ${target} over SSH. Check the network connection and cloudflared sign-in on the machine running Openship, ` +
+      `the Access policy, and the tunnel's SSH origin. (${originalMessage})`
+    );
+  }
+
   return (
-    `Cannot reach ${target} over SSH. Check that the host is up, that port ${port} is open, ` +
+    `Cannot reach ${target} over SSH. Check the network connection on the machine running Openship, ` +
+    `then check that the host is up, that port ${port} is open, ` +
     `and that no firewall or security group is dropping the connection. (${originalMessage})`
   );
 }

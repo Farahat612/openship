@@ -530,15 +530,33 @@ describe("lease", () => {
     expect(h.release).not.toHaveBeenCalled();
   });
 
-  it("closes every stream on shutdown", async () => {
+  it("closes every stream on shutdown and rejects renewal from an in-flight sweep", async () => {
     await renew([key("srv1"), key("srv2")]);
     const { stopAllContainerEventWatchers } = await import("@repo/platform/engine/modules/monitoring/container-events");
 
-    await stopAllContainerEventWatchers();
+    await stopAllContainerEventWatchers({ closing: true });
 
     expect(box("srv1").live().stopped).toBe(true);
     expect(box("srv2").live().stopped).toBe(true);
     expect(h.release.mock.calls.map((c) => c[0]).sort()).toEqual(["srv1", "srv2"]);
+
+    h.resolve.mockClear();
+    await renew([key("srv1"), key("srv2"), key("srv3")]);
+    await advance(60_000);
+    expect(h.resolve).not.toHaveBeenCalled();
+    expect(h.run).not.toHaveBeenCalled();
+  });
+
+  it("can resume subscriptions after monitoring is paused", async () => {
+    await renew([key("srv1")]);
+    const original = box("srv1").live();
+    const { stopAllContainerEventWatchers } = await import("@repo/platform/engine/modules/monitoring/container-events");
+    await stopAllContainerEventWatchers();
+    expect(original.stopped).toBe(true);
+
+    await renew([key("srv1")]);
+    expect(box("srv1").streams).toHaveLength(2);
+    expect(box("srv1").live().stopped).toBe(false);
   });
 });
 
@@ -567,13 +585,15 @@ describe("gates", () => {
   });
 
   it("subscribes to nothing on a target with no event feed", async () => {
-    // Desktop has no always-on poller to accelerate; Oblien exposes no event feed.
-    for (const target of ["desktop", "cloud"]) {
-      h.target = target;
-      await renew([key("srv1")]);
-    }
-
+    h.target = "cloud";
+    await renew([key("srv1")]);
     expect(h.resolve).not.toHaveBeenCalled();
+  });
+
+  it("accelerates an enabled desktop watcher using the same Docker subscriptions", async () => {
+    h.target = "desktop";
+    await renew([key("srv1")]);
+    expect(h.resolve).toHaveBeenCalledOnce();
   });
 
   it("ignores an org-less group key rather than resolving a runtime for it", async () => {

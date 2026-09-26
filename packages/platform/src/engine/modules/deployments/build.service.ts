@@ -59,7 +59,7 @@ import { decryptEnvMap, encrypt } from "../../lib/encryption";
 import { getCommitByRef, getLatestCommit, getRepository } from "../github/github.service";
 import { assertGitHubRepoAccess } from "../github/github-access";
 import { resolveSmartRoute } from "./smart-route";
-import { snapshotNeedsGitSource, withoutPinnedArtifacts } from "./pinned-artifacts";
+import { snapshotNeedsGitSource, snapshotNeedsProjectSource, withoutPinnedArtifacts } from "./pinned-artifacts";
 import { deploymentWorkload, projectToClass, snapshotToClass } from "./deployment-class";
 import {
   resolveProjectInfo,
@@ -2627,8 +2627,8 @@ export async function triggerDeployment(
     !isReleaseProvider(project.gitProvider)
   ) {
     const sourceless = data.reuseSnapshot
-      ? snapshotNeedsGitSource(data.reuseSnapshot.meta)
-      : snapshotNeedsGitSource(
+      ? snapshotNeedsProjectSource(data.reuseSnapshot.meta)
+      : snapshotNeedsProjectSource(
           { hasBuild: project.hasBuild ?? undefined },
           projectServicesToDeployableServices(
             (await listProjectComposeServices(project.id).catch(() => [])).filter((s) => s.enabled),

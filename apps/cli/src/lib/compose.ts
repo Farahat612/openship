@@ -38,6 +38,7 @@ import {
   resolveLocalEnvironmentSync,
 } from "@repo/adapters";
 import { sanitizeEdgeVhosts } from "@repo/adapters/proxy";
+import { DEFAULT_CONTAINER_LOG_CONFIG } from "@repo/adapters/container-logging";
 import {
   DEFAULT_IMAGE_REGISTRY,
   explainHostChannelCause,
@@ -498,10 +499,17 @@ export interface ComposeUpOpts {
 
 /** Pinned compose stack. Vars come from the generated .env (env_file + interpolation). */
 const COMPOSE_YAML = `# Managed by \`openship up\` — do not edit; re-run \`openship up\` to regenerate.
+x-logging: &default-logging
+  driver: "${DEFAULT_CONTAINER_LOG_CONFIG.Type}"
+  options:
+    max-size: "${DEFAULT_CONTAINER_LOG_CONFIG.Config["max-size"]}"
+    max-file: "${DEFAULT_CONTAINER_LOG_CONFIG.Config["max-file"]}"
+
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       # Keep the data dir in a subdirectory of the volume so a fresh install never
       # runs initdb against a bare mount root (which fails on quirky host
@@ -523,6 +531,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    logging: *default-logging
     command: ["redis-server", "--appendonly", "yes"]
     expose: ["6379"]
     volumes: [redis_data:/data]
@@ -535,6 +544,7 @@ services:
   api:
     image: \${OPENSHIP_IMAGE_REGISTRY:-ghcr.io/oblien}/openship-api:\${OPENSHIP_VERSION:-latest}
     restart: unless-stopped
+    logging: *default-logging
     # Loopback by default — the host-net edge reaches it over loopback, so nothing
     # sits on a public interface. OPENSHIP_BIND_ADDR opts into a public/LAN interface
     # (set by \`openship up\` when a public URL is configured for off-box access).
@@ -594,6 +604,7 @@ ${edgeVolumeYaml("      ")}
   dashboard:
     image: \${OPENSHIP_IMAGE_REGISTRY:-ghcr.io/oblien}/openship-dashboard:\${OPENSHIP_VERSION:-latest}
     restart: unless-stopped
+    logging: *default-logging
     # Loopback by default (see api note); OPENSHIP_BIND_ADDR opts into a public interface.
     ports: ["\${OPENSHIP_BIND_ADDR:-127.0.0.1}:\${DASHBOARD_PORT:-3001}:\${DASHBOARD_PORT:-3001}"]
     env_file: [.env]
@@ -615,6 +626,7 @@ ${edgeVolumeYaml("      ")}
     # Safe here: the edge is a singleton (host networking, one per box).
     container_name: openship-edge
     restart: unless-stopped
+    logging: *default-logging
     network_mode: host
     volumes:
 ${edgeVolumeYaml("      ")}

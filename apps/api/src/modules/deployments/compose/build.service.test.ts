@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
-import { BuildLogger, DEFAULT_RESOURCE_CONFIG, type BuildConfig } from "@repo/adapters";
+import { BuildLogger, CloudDockerRuntime, DEFAULT_RESOURCE_CONFIG, type BuildConfig } from "@repo/adapters";
+import type { BuildConfigSnapshotLike } from "@repo/platform/engine/modules/deployments/build-config";
 import { describe, expect, it, vi } from "vitest";
 
 // buildComposeImages reads the project's services from the DB and broadcasts SSE
@@ -125,15 +126,17 @@ type Captured = { config: BuildConfig; serviceName: string };
 async function run(
   services: unknown[],
   onContext?: (root: string, item: Captured) => void | Promise<void>,
-  snapshotOverrides?: Partial<typeof SNAPSHOT>,
+  snapshotOverrides?: Partial<BuildConfigSnapshotLike>,
   buildEnvVars: Record<string, string> = {},
   imageRefFor?: (item: Captured) => string,
   composeInterpolationEnv: Record<string, string> = buildEnvVars,
+  options: { cloud?: boolean; targetServiceIds?: Set<string>; refreshServiceIds?: Set<string> } = {},
 ) {
   listByProjectMock.mockResolvedValue(services);
   const captured: Captured[] = [];
   const runtime = {
-    name: "docker" as const,
+    name: options.cloud ? "cloud" : "docker",
+    prepareComposeSource: vi.fn(async (_config: BuildConfig) => {}),
     build: vi.fn(),
     buildImages: vi.fn(async (items: Array<Record<string, unknown>>) => {
       for (const item of items) {
@@ -152,6 +155,7 @@ async function run(
       }
     }),
   };
+  if (options.cloud) Object.setPrototypeOf(runtime, CloudDockerRuntime.prototype);
 
   const result = await buildComposeImages({
     // Only the fields the function reads; the rest of the graph is stubbed.
@@ -170,9 +174,98 @@ async function run(
     composeInterpolationEnv,
     buildEnvVars,
     buildResources: DEFAULT_RESOURCE_CONFIG,
+    targetServiceIds: options.targetServiceIds,
+    refreshServiceIds: options.refreshServiceIds,
   });
-  return { result, captured };
+  return { result, captured, prepareSource: runtime.prepareComposeSource };
 }
+
+function runCloud(services: unknown[], snapshot?: Partial<BuildConfigSnapshotLike>, options?: {
+  targetServiceIds?: Set<string>; refreshServiceIds?: Set<string>;
+}) {
+  return run(services, undefined, snapshot, {}, undefined, {}, { ...options, cloud: true });
+}
+
+describe("Cloud Docker uses the shared Compose source planner", () => {
+  it("sends inline files into one shared workspace context without an API-host source path", async () => {
+    const before = catalogTempRoots();
+    const { captured, prepareSource } = await runCloud([
+      inlineService("web", { dockerfile: "FROM alpine\nCOPY web/config /config", files: [{ path: "config", content: "configured" }] }),
+      inlineService("worker", { dockerfile: "FROM alpine\nCOPY worker/job.sh /job.sh", files: [{ path: "job.sh", content: "echo job" }] }),
+    ]);
+    expect(captured).toHaveLength(2);
+    expect(catalogTempRoots()).toEqual(before);
+    expect(prepareSource).toHaveBeenCalledOnce();
+    const source = prepareSource.mock.calls[0]![0];
+    expect(source.localPath).toBeUndefined();
+    expect(source.inlineSourceFiles).toEqual([
+      { path: "web/Dockerfile", content: "FROM alpine\nCOPY web/config /config" },
+      { path: "web/config", content: "configured" },
+      { path: "worker/Dockerfile", content: "FROM alpine\nCOPY worker/job.sh /job.sh" },
+      { path: "worker/job.sh", content: "echo job" },
+    ]);
+    for (const { config, serviceName } of captured) {
+      expect(config.localPath).toBeUndefined();
+      expect(config.inlineSourceFiles).toBe(source.inlineSourceFiles);
+      expect(config.dockerfilePath).toBe(`${serviceName}/Dockerfile`);
+    }
+  });
+
+  it("does not stage a repository for image-only deployments or retained-image rollback", async () => {
+    const imageOnly = await runCloud([{ ...repoService({ build: null }), image: "nginx:alpine" }], { repoUrl: "https://github.com/acme/private" });
+    expect(imageOnly.prepareSource).not.toHaveBeenCalled();
+    const retained = await runCloud([repoService()], { handoverImages: { dinohash: "openship/app:bld_retained" } });
+    expect(retained.prepareSource).not.toHaveBeenCalled();
+    expect(retained.captured).toEqual([]);
+    expect(retained.result.imageRefs.get("svc-1")).toBe("openship/app:bld_retained");
+  });
+
+  it("skips an untouched source-built sibling when only an image service is selected", async () => {
+    const { prepareSource, captured } = await runCloud([
+      repoService(), { ...repoService({ id: "image", name: "cache", build: null }), image: "redis:alpine" },
+    ], { repoUrl: "https://github.com/acme/private" }, { targetServiceIds: new Set(["image"]) });
+    expect(prepareSource).not.toHaveBeenCalled();
+    expect(captured).toEqual([]);
+  });
+
+  it("prepares a relative mount for a retained image without rebuilding it", async () => {
+    const { prepareSource, captured } = await runCloud([
+      { ...repoService(), volumes: ["./config:/config:ro"] },
+    ], { repoUrl: "https://github.com/acme/private", rootDirectory: "deploy", handoverImages: { dinohash: "openship/app:bld_retained" } });
+    expect(prepareSource).toHaveBeenCalledOnce();
+    expect(prepareSource.mock.calls[0]![0]).toMatchObject({ rootDirectory: "deploy", repoUrl: "https://github.com/acme/private" });
+    expect(captured).toEqual([]);
+  });
+
+  it("preserves the uploaded source identity and Compose directory for the shared builder", async () => {
+    const { prepareSource, captured } = await runCloud([repoService({ build: "../api" })], {
+      uploadWorkspaceId: "upload-a", sourceStaged: true, rootDirectory: "deploy",
+    });
+    expect(prepareSource.mock.calls[0]![0]).toMatchObject({ cloudWorkspaceId: "upload-a", sourceStaged: true, rootDirectory: "deploy" });
+    expect(captured[0]!.config).toMatchObject({ cloudWorkspaceId: "upload-a", sourceStaged: true, rootDirectory: "api", buildContextDirectory: "api" });
+  });
+
+  it("can restore inline configuration mounts without rebuilding the retained image", async () => {
+    const { prepareSource, captured } = await runCloud([
+      { ...inlineService("web", { dockerfile: "FROM alpine", files: [{ path: "config", content: "v1" }] }), volumes: ["./web/config:/config:ro"] },
+    ], { handoverImages: { web: "openship/web:bld_v1" } });
+    expect(captured).toEqual([]);
+    expect(prepareSource.mock.calls[0]![0].inlineSourceFiles).toContainEqual({ path: "web/config", content: "v1" });
+  });
+
+  it("stages an inline sibling's files for a selected image service without rebuilding the sibling", async () => {
+    const { prepareSource, captured } = await runCloud([
+      inlineService("web", { dockerfile: "FROM alpine", files: [{ path: "config", content: "v1" }] }),
+      { ...repoService({ id: "sidecar", name: "sidecar", build: null }), image: "nginx:alpine", volumes: ["./web/config:/config:ro"] },
+    ], { handoverImages: { web: "openship/web:bld_v1" } }, { targetServiceIds: new Set(["sidecar"]) });
+    expect(captured).toEqual([]);
+    expect(prepareSource.mock.calls[0]![0].inlineSourceFiles).toContainEqual({ path: "web/config", content: "v1" });
+  });
+
+  it.each(["../escape", "/etc/passwd", "..\\escape"])("rejects inline source escape %s before accessing the workspace", async path => {
+    await expect(runCloud([inlineService("web", { dockerfile: "FROM alpine", files: [{ path, content: "invalid" }] })])).rejects.toThrow("Invalid build file path");
+  });
+});
 
 describe("prebuilt registry images (#878)", () => {
   it("keeps an image-only GHCR reference without invoking a source build", async () => {

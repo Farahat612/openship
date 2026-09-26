@@ -30,7 +30,7 @@ export async function waitForCloudDockerWorkspace(
     assertDockerWorkspaceOwner(workspace, namespace);
     const provisioning = workspace.provisioning as { state?: string; error?: unknown } | undefined;
     if (provisioning?.state === "failed" || ["error", "failed"].includes(cloudWorkspaceStatus(workspace))) {
-      throw new Error("Oblien could not start the Docker workspace. Its existing disk has been retained; retry provisioning in Oblien.");
+      throw new Error("Oblien could not start the Docker workspace. Its existing disk has been retained. Retry the deployment; contact Openship support if it still cannot start.");
     }
     if (isDockerWorkspaceRunning(workspace) &&
         (!provisioning || provisioning.state === "ready") && workspace.ready !== false) return workspace;

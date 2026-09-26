@@ -10,11 +10,11 @@ import { repos, type Permission } from "@repo/db";
 import { secureRouter } from "../../lib/secure-router";
 import { parseBearerToken } from "../../lib/bearer";
 import {
-  MCP_RESOURCE_PATH,
   allowedMcpResources,
   canonicalizeResource,
   protectedResourceMetadataUrl,
   publicOriginFor,
+  requestMcpResourcePath,
 } from "../../lib/mcp-resource";
 import { readTokenAudience } from "../../lib/mcp-token";
 import { resolveActiveOrganizationId } from "../../middleware/active-organization";
@@ -36,6 +36,7 @@ interface McpCaller {
   userId: string;
   /** Org the call acts in, default-resolved. Null → the user has none. */
   organizationId: string | null;
+  boundOrganizationId: string | null;
   /** A real personal_access_token row backs this caller (usage is countable). */
   hasBinding: boolean;
   tokenId: string;
@@ -52,14 +53,22 @@ async function resolveMcpCaller(token: string, headers: Headers): Promise<McpCal
   // Same credential→identity lookup authMiddleware uses — one resolver, no fork.
   const id = await resolveBearerIdentity(token, headers);
   if (!id) return null;
+  if (id.scoped && !id.organizationId) return null;
 
   // Layer the capability on top: org (default-resolved), effective role, and —
   // for a scoped principal — the resource types it actually holds grants on.
-  const organizationId = await resolveActiveOrganizationId(id.userId, id.organizationId);
-  let role: McpPrincipal["role"] = "restricted";
-  if (!id.scoped && organizationId) {
-    const member = await repos.member.find(organizationId, id.userId);
-    role = (member?.role as McpPrincipal["role"]) ?? "restricted";
+  // A credential binding is an access boundary, never a fallback preference.
+  const organizationId = id.organizationId ?? await resolveActiveOrganizationId(id.userId, null);
+  if (!organizationId) return null;
+  const member = await repos.member.find(organizationId, id.userId);
+  if (!member) return null;
+  let role = id.scoped ? "restricted" : member.role as McpPrincipal["role"];
+  if (!id.organizationId) {
+    // Unbound credentials can explicitly select any current membership. List
+    // capabilities usable in any of them, even if the default is restricted.
+    // The dispatched request still checks the role in the chosen organization.
+    const roles = new Set((await repos.member.listByUser(id.userId)).map(membership => membership.role));
+    role = (["owner", "admin", "member"] as const).find(candidate => roles.has(candidate)) ?? "restricted";
   }
 
   let grantedRootTypes: ReadonlySet<string> = new Set();
@@ -111,6 +120,7 @@ async function resolveMcpCaller(token: string, headers: Headers): Promise<McpCal
     principalId: id.principalId,
     userId: id.userId,
     organizationId,
+    boundOrganizationId: id.organizationId,
     hasBinding: id.hasBinding,
     tokenId: id.tokenId,
   };
@@ -121,7 +131,7 @@ const PUBLIC_REASON =
 
 /**
  * Resource-server 401. `WWW-Authenticate` points at the PATH-AWARE Protected
- * Resource Metadata for the canonical MCP URL (RFC 9728 §5.1) — the root
+ * Resource Metadata for the requested MCP URL (RFC 9728 §5.1) — the root
  * document describes the origin, not this endpoint, and a strict client that
  * follows the pointer must land on metadata whose `resource` matches the URL it
  * connected to. Built from the PUBLIC origin (forwarded host), not the loopback
@@ -131,7 +141,7 @@ function unauthorized(c: Context, message: string) {
   return c.json(jsonRpcError(null, -32001, message), 401, {
     "WWW-Authenticate": `Bearer resource_metadata="${protectedResourceMetadataUrl(
       publicOriginFor(c.req.raw),
-      MCP_RESOURCE_PATH,
+      requestMcpResourcePath(c.req.raw),
     )}"`,
     "Access-Control-Expose-Headers": "WWW-Authenticate",
   });
@@ -222,6 +232,7 @@ r.public("post", "/", { reason: PUBLIC_REASON, rateLimit: "mcp" }, async (c) => 
   const res = await handleMcpMessage(message, {
     bearerToken: token,
     principal: caller.principal,
+    workspace: { organizationId: caller.organizationId, boundOrganizationId: caller.boundOrganizationId },
     origin: { principalId: caller.principalId, clientIp, userAgent },
     onToolCall: (record) =>
       recordToolCall(

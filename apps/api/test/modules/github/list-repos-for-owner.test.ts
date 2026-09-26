@@ -21,9 +21,10 @@ const {
 
 const { ghFetch } = vi.hoisted(() => ({ ghFetch: vi.fn() }));
 
-const { getLocalGhToken, listLocalGhRepos } = vi.hoisted(() => ({
+const { getLocalGhToken, listLocalGhRepos, getLocalGhStatus } = vi.hoisted(() => ({
   getLocalGhToken: vi.fn(),
   listLocalGhRepos: vi.fn(),
+  getLocalGhStatus: vi.fn(),
 }));
 
 vi.mock("@repo/platform/engine/modules/github/github.auth", () => ({
@@ -46,7 +47,7 @@ vi.mock("@repo/platform/engine/modules/github/github.local-auth", () => ({
   getLocalGhToken,
   listLocalGhRepos,
   listLocalGhOrgs: vi.fn(),
-  getLocalGhStatus: vi.fn(),
+  getLocalGhStatus,
 }));
 
 // env: {} → CLOUD_MODE is falsy, so createGitHubSource takes the LOCAL branch
@@ -83,6 +84,7 @@ beforeEach(() => {
   githubFetch.mockReset();
   getLocalGhToken.mockReset();
   listLocalGhRepos.mockReset();
+  getLocalGhStatus.mockResolvedValue({ available: true, login: "operator", method: "token" });
 });
 
 describe("listReposForOwner — source dispatch", () => {

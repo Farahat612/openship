@@ -120,10 +120,14 @@ app.use(
 // Hono's default logger includes the raw query string and path. Invitation ids
 // are bearer credentials embedded in a path, while OAuth/signed credentials
 // commonly live in queries, so sanitize both before anything reaches stdout.
-app.use(
-  "*",
-  logger((line) => console.log(sanitizeRequestLogLine(line))),
-);
+// Bypass logging for periodic healthcheck probes to prevent log flooding.
+const requestLogger = logger((line) => console.log(sanitizeRequestLogLine(line)));
+app.use("*", (c, next) => {
+  if (c.req.path === "/api/health" || c.req.path === "/health") {
+    return next();
+  }
+  return requestLogger(c, next);
+});
 // Seed a per-request memo store FIRST so every downstream handler shares it.
 // Collapses idempotent-per-request reads (cloud session validation, GitHub
 // auth-mode, installations) to one call each — a single /github/status was

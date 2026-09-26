@@ -1,18 +1,9 @@
 "use client";
 
+import { Icon as UiIcon } from "@repo/ui/icons";
+
 import React, { useState } from "react";
 import Link from "next/link";
-import {
-  ArrowRight,
-  GitBranch,
-  Globe,
-  Server,
-  FolderOpen,
-  Cloud,
-  HardDrive,
-  MoreHorizontal,
-  Trash2,
-} from "lucide-react";
 import { type Project } from "@/constants/mock";
 import { AppLogo } from "@/components/AppLogo";
 import { getFrameworkConfig } from "@/components/import-project/Frameworks";
@@ -40,14 +31,14 @@ export function getHostingLabel(
 ): { icon: React.ReactNode; label: string } | null {
   if (!deployTarget) return null;
   if (deployTarget === "cloud")
-    return { icon: <Cloud className="size-3.5" />, label: t.projects.hosting.cloud };
+    return { icon: <UiIcon name="cloud" className="size-3.5 shrink-0" />, label: t.projects.hosting.cloud };
   if (deployTarget === "server")
     return {
-      icon: <Server className="size-3.5" />,
+      icon: <UiIcon name="server" className="size-3.5 shrink-0" />,
       label: serverName || t.projects.hosting.server,
     };
   if (deployTarget === "local")
-    return { icon: <HardDrive className="size-3.5" />, label: t.projects.hosting.local };
+    return { icon: <UiIcon name="hard-drive" className="size-3.5 shrink-0" />, label: t.projects.hosting.local };
   return null;
 }
 
@@ -120,160 +111,158 @@ const ProjectCard: React.FC<Props> = ({ project, preferAppLogo, updateAvailable,
   };
 
   return (
-    <div className="relative grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-2 px-4 py-3.5 hover:bg-muted/40 transition-colors group sm:flex sm:gap-4 sm:px-5">
+    <div className="@container/project-row relative hover:bg-muted/40 transition-colors group">
       {/* Stretched-link overlay: the whole row is a real anchor (cmd/middle-click
           → open in new tab) without nesting a <button> inside an <a>. It sits
           above the static content (captures row clicks) but below the draft menu
           (lifted with z-10), which stays independently clickable. */}
       <Link href={clickTarget} aria-label={project.name} className="absolute inset-0 z-0" />
 
-      {/* Icon — on the Apps page show the catalog app's brand logo; otherwise
-          the project favicon, falling back to the framework/service glyph. */}
-      <div className="w-10 h-10 rounded-xl bg-muted/60 flex items-center justify-center shrink-0 group-hover:bg-muted transition-colors overflow-hidden">
-        {preferAppLogo && project.isApp ? (
-          <AppLogo appId={appTemplateId} className="w-6 h-6 object-contain" />
-        ) : favicon.showImage ? (
-          <img
-            ref={favicon.ref}
-            src={project.favicon!}
-            alt=""
-            className="w-6 h-6 object-contain"
-            onError={favicon.onError}
-          />
-        ) : (
-          fw.icon("var(--foreground)")
-        )}
-      </div>
-
-      {/* Name + domain */}
-      <div className="min-w-0 sm:w-44 lg:w-56 text-start">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <p className="text-sm font-medium text-foreground truncate">{project.name}</p>
-          {project.activeVersion != null && (
-            <span
-              className="shrink-0 rounded-md bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground"
-              title={interpolate(t.projects.card.liveVersion, {
-                version: String(project.activeVersion),
-              })}
-            >
-              v{project.activeVersion}
-            </span>
-          )}
-          {updateAvailable && (
-            <span className="shrink-0 rounded-md bg-warning-bg px-1.5 py-0.5 text-[10px] font-medium text-warning">
-              {t.projects.card.updateAvailable}
-            </span>
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-2 px-4 py-3.5 @xl/project-row:flex @xl/project-row:gap-4 @xl/project-row:px-5">
+        {/* Icon — on the Apps page show the catalog app's brand logo; otherwise
+            the project favicon, falling back to the framework/service glyph. */}
+        <div className="w-10 h-10 rounded-xl bg-muted/60 flex items-center justify-center shrink-0 group-hover:bg-muted transition-colors overflow-hidden">
+          {preferAppLogo && project.isApp ? (
+            <AppLogo appId={appTemplateId} className="w-6 h-6 object-contain" />
+          ) : favicon.showImage ? (
+            <img
+              ref={favicon.ref}
+              src={project.favicon!}
+              alt=""
+              className="w-6 h-6 object-contain"
+              onError={favicon.onError}
+            />
+          ) : (
+            fw.icon("var(--foreground)")
           )}
         </div>
-        {domain && <p className="text-xs text-muted-foreground truncate mt-0.5">{domain}</p>}
-      </div>
 
-      {/* Meta badges */}
-      <div className="hidden flex-1 min-w-0 flex-wrap items-center gap-x-3 gap-y-1 sm:flex">
-        {/* Stack */}
-        <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 px-2 py-0.5 rounded-md bg-muted/60 text-xs text-muted-foreground" title={fw.name}>
-          <span className="truncate">{fw.name}</span>
-        </span>
-
-        {/* App marker — catalog-installed (Convex, webmail, …) */}
-        {project.isApp && (
-          <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 px-2 py-0.5 rounded-md bg-primary/10 text-xs font-medium text-primary">
-            <span className="truncate">{t.projects.card.appBadge}</span>
-          </span>
-        )}
-
-        {/* Hosting target */}
-        {hosting && (
-          <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-xs text-muted-foreground" title={hosting.label}>
-            {hosting.icon}
-            <span className="truncate max-w-[120px]">{hosting.label}</span>
-          </span>
-        )}
-
-        {/* Source */}
-        {isLocal ? (
-          <span className="hidden md:inline-flex min-w-0 max-w-full items-center gap-1.5 text-xs text-muted-foreground">
-            <FolderOpen className="size-3.5" />
-            <span className="truncate max-w-[140px]">{t.projects.card.sourceLocal}</span>
-          </span>
-        ) : repoSlug ? (
-          <span className="hidden md:inline-flex min-w-0 max-w-full items-center gap-1.5 text-xs text-muted-foreground" title={repoSlug}>
-            <GitBranch className="size-3.5" />
-            <span className="truncate max-w-[140px]">{project.gitRepo}</span>
-          </span>
-        ) : null}
-
-        {/* Build target */}
-        {hasMultipleServices ? (
-          <span className="hidden lg:inline-flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
-            <Server className="size-3.5" />
-            {t.projects.card.services}
-          </span>
-        ) : project.workloadType === "worker" ? (
-          <span className="hidden lg:inline-flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
-            <Server className="size-3.5" />
-            {t.projects.card.worker}
-          </span>
-        ) : project.hasServer === false ? (
-          <span className="hidden lg:inline-flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
-            <Globe className="size-3.5" />
-            {t.projects.card.static}
-          </span>
-        ) : project.productionMode === "standalone" ? (
-          <span className="hidden lg:inline-flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
-            <Server className="size-3.5" />
-            {t.projects.card.standalone}
-          </span>
-        ) : null}
-      </div>
-
-      {/* Right side */}
-      <div className="col-start-2 flex min-w-0 max-w-full items-center gap-3 sm:shrink-0">
-        {/* Time */}
-        <span className="hidden lg:block text-xs text-muted-foreground">
-          {timeAgo(project.updatedAt || project.createdAt, t)}
-        </span>
-
-        {/* Status pill (badge only — no dot) */}
-        <ProjectStatusBadge
-          project={project}
-          className="rounded-full px-2 py-0.5 text-[10px] font-medium"
-        />
-
-        {/* Draft apps get a "delete app" menu (deployed apps delete from the
-            project page). Stops row navigation. */}
-        {isDraftApp && (
-          <div className="relative z-10" onClick={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              onClick={() => setMenuOpen((v) => !v)}
-              className="flex size-7 items-center justify-center rounded-lg text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-              aria-label={t.projects.draft.deleteTitle}
-            >
-              <MoreHorizontal className="size-4" />
-            </button>
-            {menuOpen && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-                <div className="absolute end-0 top-full z-50 mt-1 w-44 rounded-xl border border-border bg-popover py-1 shadow-lg">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      confirmDeleteApp();
-                    }}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-danger transition-colors hover:bg-danger-bg"
-                  >
-                    <Trash2 className="size-3.5" />
-                    {t.projects.draft.delete}
-                  </button>
-                </div>
-              </>
+        {/* Name + domain */}
+        <div className="min-w-0 text-start @xl/project-row:w-44 @xl/project-row:flex-none @3xl/project-row:w-56">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <p className="min-w-0 truncate text-sm font-medium text-foreground" title={project.name}>{project.name}</p>
+            {project.activeVersion != null && (
+              <span
+                className="shrink-0 rounded-md bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground"
+                title={interpolate(t.projects.card.liveVersion, {
+                  version: String(project.activeVersion),
+                })}
+              >
+                v{project.activeVersion}
+              </span>
+            )}
+            {updateAvailable && (
+              <span className="shrink-0 whitespace-nowrap rounded-md bg-warning-bg px-1.5 py-0.5 text-[10px] font-medium text-warning">
+                {t.projects.card.updateAvailable}
+              </span>
             )}
           </div>
-        )}
+          {domain && <p className="text-xs text-muted-foreground truncate mt-0.5">{domain}</p>}
+        </div>
 
-        <ArrowRight className="size-4 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors rtl:rotate-180" />
+        {/* Keep metadata on one line; reveal secondary fields when the row itself
+            has room, including when the Projects sidebar narrows a desktop list. */}
+        <div className="hidden min-w-0 flex-1 items-center gap-3 whitespace-nowrap @xl/project-row:flex">
+          {/* Stack */}
+          <span className="inline-flex min-w-0 max-w-[40%] shrink-0 items-center gap-1.5 px-2 py-0.5 rounded-md bg-secondary text-xs th-text-body" title={fw.name}>
+            <span className="truncate">{fw.name}</span>
+          </span>
+
+          {/* App marker — catalog-installed (Convex, webmail, …) */}
+          {project.isApp && (
+            <span className="hidden min-w-0 max-w-[30%] shrink-0 items-center gap-1.5 px-2 py-0.5 rounded-md bg-primary/10 text-xs font-medium text-primary @2xl/project-row:inline-flex" title={t.projects.card.appBadge}>
+              <span className="truncate">{t.projects.card.appBadge}</span>
+            </span>
+          )}
+
+          {/* Hosting target */}
+          {hosting && (
+            <span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground" title={hosting.label}>
+              {hosting.icon}
+              <span className="truncate">{hosting.label}</span>
+            </span>
+          )}
+
+          {/* Source */}
+          {isLocal ? (
+            <span className="hidden min-w-0 items-center gap-1.5 text-xs text-muted-foreground @3xl/project-row:inline-flex" title={t.projects.card.sourceLocal}>
+              <UiIcon name="folder-open" className="size-3.5 shrink-0" />
+              <span className="truncate">{t.projects.card.sourceLocal}</span>
+            </span>
+          ) : repoSlug ? (
+            <span className="hidden min-w-0 items-center gap-1.5 text-xs text-muted-foreground @3xl/project-row:inline-flex" title={repoSlug}>
+              <UiIcon name="git-branch" className="size-3.5 shrink-0" />
+              <span className="truncate">{project.gitRepo}</span>
+            </span>
+          ) : null}
+
+          {/* Build target */}
+          {!hasMultipleServices && (project.workloadType === "worker" ? (
+            <span className="hidden min-w-0 max-w-32 shrink-0 items-center gap-1.5 text-xs text-muted-foreground @4xl/project-row:inline-flex" title={t.projects.card.worker}>
+              <UiIcon name="server" className="size-3.5 shrink-0" />
+              <span className="truncate">{t.projects.card.worker}</span>
+            </span>
+          ) : project.hasServer === false ? (
+            <span className="hidden min-w-0 max-w-32 shrink-0 items-center gap-1.5 text-xs text-muted-foreground @4xl/project-row:inline-flex" title={t.projects.card.static}>
+              <UiIcon name="globe" className="size-3.5 shrink-0" />
+              <span className="truncate">{t.projects.card.static}</span>
+            </span>
+          ) : project.productionMode === "standalone" ? (
+            <span className="hidden min-w-0 max-w-32 shrink-0 items-center gap-1.5 text-xs text-muted-foreground @4xl/project-row:inline-flex" title={t.projects.card.standalone}>
+              <UiIcon name="server" className="size-3.5 shrink-0" />
+              <span className="truncate">{t.projects.card.standalone}</span>
+            </span>
+          ) : null)}
+        </div>
+
+        {/* Right side */}
+        <div className="col-start-2 flex min-w-0 max-w-full items-center gap-3 whitespace-nowrap @xl/project-row:shrink-0">
+          {/* Time */}
+          <span className="hidden text-xs text-muted-foreground @4xl/project-row:block">
+            {timeAgo(project.updatedAt || project.createdAt, t)}
+          </span>
+
+          {/* Status pill (badge only — no dot) */}
+          <ProjectStatusBadge
+            project={project}
+            className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium"
+          />
+
+          {/* Draft apps get a "delete app" menu (deployed apps delete from the
+              project page). Stops row navigation. */}
+          {isDraftApp && (
+            <div className="relative z-10" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={() => setMenuOpen((v) => !v)}
+                className="flex size-7 items-center justify-center rounded-lg text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+                aria-label={t.projects.draft.deleteTitle}
+              >
+                <UiIcon name="more" className="size-4" />
+              </button>
+              {menuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+                  <div className="absolute end-0 top-full z-50 mt-1 w-44 rounded-xl border border-border bg-popover py-1 shadow-lg">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        confirmDeleteApp();
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-sm text-danger transition-colors hover:bg-danger-bg"
+                    >
+                      <UiIcon name="trash" className="size-3.5" />
+                      {t.projects.draft.delete}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          <UiIcon name="arrow-right" className="size-4 shrink-0 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors rtl:rotate-180" />
+        </div>
       </div>
     </div>
   );

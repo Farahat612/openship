@@ -189,13 +189,14 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     // Health-watch Docker event streams. Each holds a `retain()` on a pooled SSH
     // connection, so these must be released before sshManager.destroy() below —
     // and before it, not after, so the pool isn't tearing down connections a
-    // reconnect is still trying to use. Skipped on a reload for the same reason as
+    // reconnect is still trying to use. Fence renewal from any sweep still draining
+    // on the runner. Skipped on a reload for the same reason as
     // the tunnels: the successor's first poll tick re-subscribes.
     try {
       const { stopAllContainerEventWatchers } = await import(
         "@repo/platform/engine/modules/monitoring/container-events"
       );
-      await stopAllContainerEventWatchers();
+      await stopAllContainerEventWatchers({ closing: true });
     } catch (err) {
       console.warn("[shutdown] container event watcher close failed:", err);
     }

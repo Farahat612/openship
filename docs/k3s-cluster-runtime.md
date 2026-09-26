@@ -108,7 +108,7 @@ Active and failed runtimes retain their server/network dependency. Membership an
 
 ## Remaining delivery stages
 
-1. Complete live application-cycle acceptance, including registry access, cross-node Edge routing, replica changes, update/rollback and controller interruption.
+1. Extend application-cycle acceptance to controller-process interruption and the live infrastructure cases below. The repeatable Docker/K3s scaling suite covers the application lifecycle on a prepared cluster.
 2. Extend backup recovery to Redis and existing Docker database imports, external storage discovery and reviewed major-version upgrades. Engine-native replication uses separate volumes per replica; several database processes must never share a writable database directory.
 3. Add cross-cluster archive recovery and explicit recovery of retained local volumes, without replacing existing databases implicitly.
 4. Extend the workload adapter to multi-service projects, scoped service connections, live cluster membership changes, metrics, autoscaling and redundant Edge/API gateways.
@@ -118,6 +118,8 @@ Kubernetes supplies pod scheduling, Service routing and CoreDNS. OpenShip suppli
 ## Validation boundary
 
 Tests cover host ownership/configuration guards, private firewall generation, prerequisite failures, quorum recovery ordering, cleanup continuation, durable claims and leases, HTTP/native/SDK/SSE parity, input locking and stale progress handling. Workload tests cover image publication, failed rollout/rollback, watch reconnection, namespace ownership/data protection, replica admission, topology observations and API transport on Node and Bun. Host-function tests substitute operating-system mutations and do not install K3s on the development machine.
+
+The [scaling E2E suite](../apps/api/test/e2e/SCALING.md) drives the real HTTP API and SDK against a migrated test database, an authenticated registry, three disposable K3s nodes and the shipped OpenShip Edge. It covers source deployment, public traffic across servers, internal DNS, scaling up/down without rebuilding, environment changes, updates, retained-image rollback, SSE reconnect, cancellation, failed-release retry, worker outage/recovery, pod replacement and project/namespace/route cleanup. The release gate requires this suite to pass before publishing; it can also run manually. Routine pull request and `main` CI runs exclude it. The fixture substitutes host transport and starts from a verified cluster; it does not exercise SSH/systemd installation, provider networking or the browser journey.
 
 An isolated six-node Linux/K3s lab exercised PostgreSQL and Redis standalone/cluster creation, authenticated queries from the application namespace, PostgreSQL growth from three to four instances, S3 backup and restoration of test data with new credentials, and retained-volume versus explicit-purge behavior. With a worker deliberately paused, PostgreSQL promoted a replica and served an acknowledged test write in 82 seconds; Redis recovered a shard's replicated value in 15 seconds. These are test observations, not recovery-time guarantees. Real HTTP/native/SSE tests cover lifecycle and secret boundaries; Chromium checks cover the catalog, submit locking, connection/redeploy separation, restore progress and responsive panels.
 

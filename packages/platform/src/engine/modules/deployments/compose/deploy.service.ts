@@ -1009,7 +1009,11 @@ async function deployComposeServicesUnlocked(
   const enabled = services.filter((s) => s.enabled);
   await assertCloudDeploymentLimits(project.organizationId, {
     projectId: project.id,
-    resources: opts?.resources, services: enabled,
+    resources: opts?.resources,
+    // A direct service Start carries siblings without applying their pending
+    // resource edits. Organization service counts are still checked by the gate.
+    services: opts?.strictScope && opts.targetServiceIds
+      ? enabled.filter(service => opts.targetServiceIds!.has(service.id)) : enabled,
   });
 
   if (enabled.length === 0) {

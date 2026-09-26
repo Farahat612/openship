@@ -1,0 +1,45 @@
+name: Scaling E2E
+
+on:
+  workflow_call: {}
+  workflow_dispatch: {}
+
+jobs:
+  scaling:
+    name: Full scaling journey
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock', '**/bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Typecheck scaling tests and their production dependencies
+        working-directory: apps/api
+        run: bunx tsc --noEmit -p tsconfig.scaling-e2e.json
+      - name: Check Docker
+        run: docker info
+      - name: Run the real scaling journey
+        env:
+          RUN_DOCKER_E2E: "1"
+          E2E_SCOPE: scaling
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/openship-scaling"
+          bun run --cwd apps/api test:e2e 2>&1 | tee "$RUNNER_TEMP/openship-scaling/output.log"
+      - name: Save diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: scaling-e2e-diagnostics
+          path: ${{ runner.temp }}/openship-scaling
+          if-no-files-found: ignore
+          retention-days: 7

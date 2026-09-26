@@ -4,7 +4,7 @@
  *  Single source of truth for all colors across the dashboard.
  *
  *  System:
- *    data-theme="light"|"dark" on <html>  (set by ThemeProvider)
+ *    data-theme="light"|"dim"|"dark" on <html>  (set by ThemeProvider)
  *
  *  Scale primitives:
  *    --th-on-{N}    Foreground at N% opacity (text, icons, borders)
@@ -21,8 +21,8 @@
  *    className="th-card"
  *    style={{ color: "var(--th-text-muted)" }}
  *
- *  Semantic colors (status, accent) stay as Tailwind utilities -
- *  they are not gray-scale and need per-context tuning.
+ *  Status and accent colors are defined here and consumed through
+ *  semantic utilities, so components do not choose their own palette.
  * ─────────────────────────────────────────────────────────────────
  */
 
@@ -66,8 +66,7 @@
   --th-text-strong:    rgba(0,0,0,.82);
   --th-text-body:      rgba(0,0,0,.66);
   --th-text-secondary: rgba(0,0,0,.58);
-  /* Readable on both the page and cards; text must not add another opacity. */
-  --th-text-muted:     rgba(0,0,0,.58);
+  --th-text-muted:     rgba(0,0,0,.52);
   --th-text-label:     rgba(0,0,0,.52);
   --th-text-hint:      rgba(0,0,0,.46);
   --th-text-ghost:     rgba(0,0,0,.22);
@@ -104,6 +103,15 @@
   --th-btn-bg:       rgba(0,0,0,.92);
   --th-btn-text:     #ffffff;
   --th-btn-bg-hover: rgba(0,0,0,.80);
+
+  /* Accent action — the sidebar's primary action in each theme. */
+  --th-btn-accent-from: color-mix(in oklab, var(--color-violet-500) 90%, transparent);
+  --th-btn-accent-via: color-mix(in oklab, var(--th-btn-bg) 90%, transparent);
+  --th-btn-accent-to: color-mix(in oklab, var(--color-blue-500) 90%, transparent);
+  --th-btn-accent-text: var(--color-white);
+  --th-btn-accent-highlight: color-mix(in oklab, var(--color-white) 15%, transparent);
+  --th-btn-accent-shadow: color-mix(in oklab, var(--th-btn-bg) 20%, transparent);
+  --th-btn-accent-shadow-hover: color-mix(in oklab, var(--th-btn-bg) 30%, transparent);
 
   /* ─ Button - ghost / outline ─ */
   --th-btn-ghost-bd:         #e0e0e0;
@@ -150,13 +158,18 @@
      with dark), text-X-600 on light. */
   --st-success-fg: #059669;  --st-success-bg: rgba(16,185,129,.10);  --st-success-bd: rgba(16,185,129,.20);
   --st-danger-fg:  #dc2626;  --st-danger-bg:  rgba(239,68,68,.10);   --st-danger-bd:  rgba(239,68,68,.20);
-  /* Amber-800 keeps warning text readable on the light warning tint. */
-  --st-warning-fg: #92400e;  --st-warning-bg: rgba(245,158,11,.10);  --st-warning-bd: rgba(245,158,11,.20);
+  --st-warning-fg: #d97706;  --st-warning-bg: rgba(245,158,11,.10);  --st-warning-bd: rgba(245,158,11,.20);
   --st-info-fg:    #2563eb;  --st-info-bg:    rgba(59,130,246,.10);  --st-info-bd:    rgba(59,130,246,.20);
   --st-neutral-fg: #52525b;  --st-neutral-bg: #f4f4f5;  --st-neutral-bd: #e4e4e7;
 
   /* Solid fills (bars/dots/solid buttons) — vivid mid-tones that read on white. */
   --st-success-solid: #10b981;  --st-danger-solid: #ef4444;  --st-warning-solid: #f59e0b;  --st-info-solid: #3b82f6;  --st-neutral-solid: #9ca3af;
+
+  /* ANSI hues without a semantic status equivalent; log surfaces use card/text tokens. */
+  --th-terminal-magenta: #9333ea;
+  --th-terminal-cyan: #0891b2;
+  --th-terminal-black: var(--th-text-title);
+  --th-terminal-white: var(--th-text-muted);
 }
 
 
@@ -199,7 +212,7 @@
   --th-text-strong:    rgba(255,255,255,.85);
   --th-text-body:      rgba(255,255,255,.66);
   --th-text-secondary: rgba(255,255,255,.58);
-  --th-text-muted:     rgba(255,255,255,.58);
+  --th-text-muted:     rgba(255,255,255,.50);
   --th-text-label:     rgba(255,255,255,.50);
   --th-text-hint:      rgba(255,255,255,.36);
   --th-text-ghost:     rgba(255,255,255,.22);
@@ -229,6 +242,12 @@
   --th-btn-bg:       #ffffff;
   --th-btn-text:     #000000;
   --th-btn-bg-hover: rgba(255,255,255,.90);
+
+  --th-btn-accent-from: color-mix(in oklab, var(--color-amber-400) 90%, transparent);
+  --th-btn-accent-via: color-mix(in oklab, var(--color-orange-500) 90%, transparent);
+  --th-btn-accent-to: color-mix(in oklab, var(--color-rose-500) 90%, transparent);
+  --th-btn-accent-shadow: color-mix(in oklab, var(--color-orange-500) 20%, transparent);
+  --th-btn-accent-shadow-hover: color-mix(in oklab, var(--color-orange-500) 30%, transparent);
 
   /* ─ Button - ghost / outline ─ */
   --th-btn-ghost-bd:         rgba(255,255,255,.10);
@@ -284,6 +303,10 @@
 
   /* Solid fills (bars/dots/solid buttons) — desaturated so they read as color, not neon glow. */
   --st-success-solid: hsl(154 44% 47%);  --st-danger-solid: hsl(0 74% 60%);  --st-warning-solid: hsl(38 66% 52%);  --st-info-solid: hsl(214 58% 56%);  --st-neutral-solid: #8b8f98;
+  --th-terminal-magenta: #c084fc;
+  --th-terminal-cyan: #22d3ee;
+  --th-terminal-black: var(--th-card-on-page);
+  --th-terminal-white: var(--th-text-title);
 }
 
 
@@ -361,6 +384,13 @@
   --th-btn-text:     #000000;
   --th-btn-bg-hover: rgba(255,255,255,.90);
 
+  --th-btn-accent-from: hsl(86 84% 74%);
+  --th-btn-accent-via: hsl(82 80% 64%);
+  --th-btn-accent-to: hsl(74 74% 54%);
+  --th-btn-accent-text: #0c1206;
+  --th-btn-accent-shadow: color-mix(in oklab, var(--color-lime-400) 25%, transparent);
+  --th-btn-accent-shadow-hover: color-mix(in oklab, var(--color-lime-400) 40%, transparent);
+
   /* ─ Button - ghost / outline ─ */
   --th-btn-ghost-bd:         rgba(255,255,255,.14);
   --th-btn-ghost-text:       rgba(255,255,255,.62);
@@ -412,6 +442,10 @@
 
   /* Solid fills (bars/dots/solid buttons) — softened to sit on the lifted gray without glare. */
   --st-success-solid: hsl(85 68% 62%);  --st-danger-solid: hsl(4 72% 57%);  --st-warning-solid: hsl(38 68% 53%);  --st-info-solid: hsl(214 60% 57%);  --st-neutral-solid: rgba(255,255,255,.42);
+  --th-terminal-magenta: hsl(275 60% 75%);
+  --th-terminal-cyan: hsl(185 55% 65%);
+  --th-terminal-black: var(--th-card-on-page);
+  --th-terminal-white: var(--th-text-title);
 }
 
 
@@ -430,6 +464,19 @@
 .th-text-label     { color: var(--th-text-label); }
 .th-text-hint      { color: var(--th-text-hint); }
 .th-text-ghost     { color: var(--th-text-ghost); }
+
+/* Shared navigation retains the original muted text until selected or hovered. */
+.th-nav-item {
+  color: var(--th-text-muted);
+}
+.th-nav-item:hover {
+  color: var(--th-text-title);
+  background-color: color-mix(in oklab, var(--th-text-title) 4%, transparent);
+}
+.th-nav-item[aria-current="page"] {
+  color: var(--th-text-title);
+  background-color: color-mix(in oklab, var(--th-text-title) 7%, transparent);
+}
 
 /* Page / layout */
 .th-page     { background-color: var(--th-bg-page); min-height: 100dvh; }
@@ -473,6 +520,18 @@
 }
 .th-btn:hover            { background-color: var(--th-btn-bg-hover); }
 .th-btn:disabled         { opacity: .42; cursor: not-allowed; }
+
+/* Accent button — palette and shadows follow the theme without component overrides. */
+.th-btn-accent {
+  color: var(--th-btn-accent-text);
+  background-image:
+    radial-gradient(circle at 30% 50%, var(--th-btn-accent-highlight), transparent 70%),
+    linear-gradient(to right in oklab, var(--th-btn-accent-from), var(--th-btn-accent-via), var(--th-btn-accent-to));
+  box-shadow: 0 1px 3px 0 var(--th-btn-accent-shadow), 0 1px 2px -1px var(--th-btn-accent-shadow);
+}
+.th-btn-accent:hover {
+  box-shadow: 0 4px 6px -1px var(--th-btn-accent-shadow-hover), 0 2px 4px -2px var(--th-btn-accent-shadow-hover);
+}
 
 /* Button - ghost/outline */
 .th-btn-ghost {

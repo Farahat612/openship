@@ -1,6 +1,7 @@
 "use client";
 
-import { Plus, BookOpen, ExternalLink } from "lucide-react";
+import { Icon as UiIcon } from "@repo/ui/icons";
+
 import { useI18n } from "@/components/i18n-provider";
 
 const DOCS_URL = "https://openship.io/docs";
@@ -80,14 +81,14 @@ export function JobsEmptyState({ onCreate }: { onCreate: () => void }) {
       <h3 className="mb-2 text-xl font-medium text-foreground/80" style={{ letterSpacing: "-0.2px" }}>
         {e.title}
       </h3>
-      <p className="mx-auto mb-6 max-w-md text-sm leading-relaxed text-muted-foreground">{e.desc}</p>
+      <p className="mx-auto mb-6 max-w-md text-sm leading-relaxed text-muted-foreground/70">{e.desc}</p>
 
       <div className="flex flex-col items-center justify-center gap-3 sm:flex-row">
         <button
           onClick={onCreate}
           className="inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
         >
-          <Plus className="size-4" />
+          <UiIcon name="plus" className="size-4" />
           {e.cta}
         </button>
         <a
@@ -96,9 +97,9 @@ export function JobsEmptyState({ onCreate }: { onCreate: () => void }) {
           rel="noopener noreferrer"
           className="inline-flex items-center gap-2 rounded-xl bg-muted/50 px-6 py-3 text-sm font-medium text-foreground transition-colors hover:bg-muted"
         >
-          <BookOpen className="size-4" />
+          <UiIcon name="book" className="size-4" />
           {e.docs}
-          <ExternalLink className="size-3.5 opacity-60" />
+          <UiIcon name="external-link" className="size-3.5 opacity-60" />
         </a>
       </div>
     </div>

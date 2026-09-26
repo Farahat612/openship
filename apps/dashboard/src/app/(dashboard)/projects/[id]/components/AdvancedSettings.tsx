@@ -1,30 +1,5 @@
+import { Icon as UiIcon, type IconName } from "@repo/ui/icons";
 import React, { useCallback, useEffect, useState } from "react";
-import {
-  Activity,
-  AlertTriangle,
-  ArrowRightLeft,
-  Check,
-  ChevronDown,
-  Cloud,
-  Copy,
-  Download,
-  HardDrive,
-  Hammer,
-  Loader2,
-  MoreVertical,
-  Network,
-  Package,
-  Pause,
-  Pencil,
-  Play,
-  RotateCcw,
-  Server,
-  Settings2,
-  ShieldCheck,
-  Trash2,
-  Waypoints,
-  Zap,
-} from "lucide-react";
 import { useProjectSettings } from "@/context/ProjectSettingsContext";
 import { DeletionModal } from "./DeletionModal";
 import { ProjectRenameModal } from "./ProjectRenameModal";
@@ -47,6 +22,9 @@ import { useAuth } from "@/context/AuthContext";
 import { ExportPanel } from "@/components/data-transfer/ExportPanel";
 import { usePlatform } from "@/context/PlatformContext";
 import { ProjectRollbackSettings } from "@/components/rollback/ProjectRollbackSettings";
+import { isSchemaAppTemplate } from "@/components/app-settings/AppSettingsForm";
+import { AppConfiguration } from "./AppConfiguration";
+import { BuildSettings } from "./BuildSettings";
 
 interface Props {
   onDeleteProject: (wipeVolumes?: boolean, recordOnly?: boolean) => void;
@@ -73,7 +51,7 @@ function SectionCard({
 }: {
   title: string;
   description: string;
-  icon: React.ComponentType<{ className?: string }>;
+  icon: IconName;
   iconTone: keyof typeof ICON_TONES;
   children: React.ReactNode;
   /** Render collapsed behind an expand toggle (header stays visible), matching
@@ -98,14 +76,14 @@ function SectionCard({
   const header = (
     <>
       <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${ICON_TONES[iconTone]}`}>
-        <Icon className="size-4" />
+        <UiIcon name={Icon} className="size-4" />
       </div>
       <div className="min-w-0 flex-1">
         <h3 className="text-[14px] font-semibold text-foreground">{title}</h3>
         <p className="mt-0.5 text-[12px] text-muted-foreground">{description}</p>
       </div>
       {collapsible && (
-        <ChevronDown
+        <UiIcon name="chevron-down"
           className={`mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`}
         />
       )}
@@ -290,20 +268,20 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
     {
       id: "rename",
       label: menu.rename,
-      icon: <Pencil className="size-4" />,
+      icon: <UiIcon name="edit" className="size-4" />,
       onClick: () => setShowRenameModal(true),
     },
     {
       id: "copy-id",
       label: menu.copyId,
-      icon: <Copy className="size-4" />,
+      icon: <UiIcon name="copy" className="size-4" />,
       onClick: () => void handleCopyProjectId(),
       divider: true,
     },
     {
       id: "toggle",
       label: isProjectActive ? menu.pause : menu.resume,
-      icon: isProjectActive ? <Pause className="size-4" /> : <Play className="size-4" />,
+      icon: isProjectActive ? <UiIcon name="pause" className="size-4" /> : <UiIcon name="play" className="size-4" />,
       onClick: () => void handleDisableProject(),
       disabled: loading.disableProject,
       variant: isProjectActive ? "warning" : "success",
@@ -312,7 +290,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
     {
       id: "delete",
       label: menu.delete,
-      icon: <Trash2 className="size-4" />,
+      icon: <UiIcon name="trash" className="size-4" />,
       onClick: () => setShowDeleteModal(true),
       variant: "danger",
     },
@@ -355,7 +333,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
       <div className="flex h-full flex-col rounded-2xl border border-border/50 bg-card">
         <div className="flex items-start gap-3 rounded-t-2xl border-b border-border/40 px-5 py-4">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10">
-            <Settings2 className="size-4 text-primary" />
+            <UiIcon name="sliders" className="size-4 text-primary" />
           </div>
           <div className="min-w-0 flex-1">
             <h3 className="text-[14px] font-semibold text-foreground">{t.projectSettings.advanced.projectInfo.title}</h3>
@@ -364,7 +342,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
           {/* Project-level actions live on the heading, where the name is shown. */}
           <DropdownMenu
             actions={menuActions}
-            trigger={<MoreVertical className="size-4 text-muted-foreground" />}
+            trigger={<UiIcon name="more-vertical" className="size-4 text-muted-foreground" />}
             triggerClassName="-me-1.5 shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             className="shrink-0"
           />
@@ -386,7 +364,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
                 title={menu.rename}
                 className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               >
-                <Pencil className="size-3" />
+                <UiIcon name="edit" className="size-3" />
               </button>
             }
           />
@@ -409,7 +387,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
       <SectionCard
         title={t.projectSettings.advanced.projectStatus.title}
         description={t.projectSettings.advanced.projectStatus.description}
-        icon={Settings2}
+        icon={"sliders"}
         iconTone="primary"
       >
           {/* Wraps rather than squeezing: in a third-width card the label pair and the
@@ -423,11 +401,11 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
                 }`}
               >
                 {activeRun ? (
-                  <ArrowRightLeft className="size-4 animate-pulse text-warning" />
+                  <UiIcon name="arrows-left-right" className="size-4 animate-pulse text-warning" />
                 ) : isProjectActive ? (
-                  <Pause className="size-4 text-success" />
+                  <UiIcon name="pause" className="size-4 text-success" />
                 ) : (
-                  <Play className="size-4 text-warning" />
+                  <UiIcon name="play" className="size-4 text-warning" />
                 )}
               </div>
               <div className="min-w-0">
@@ -462,7 +440,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
               }`}
             >
               {loading.disableProject ? (
-                <Loader2 className="size-3.5 animate-spin" />
+                <UiIcon name="spinner" className="size-3.5 animate-spin" />
               ) : isProjectActive ? (
                 t.projectSettings.advanced.projectStatus.disable
               ) : (
@@ -474,10 +452,16 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
 
       </div>
 
+      {projectData.isApp && isSchemaAppTemplate(projectData.appTemplateId) ? (
+        <AppConfiguration />
+      ) : (
+        <BuildSettings />
+      )}
+
       <SectionCard
         title={t.projectSettings.git.rollbackHistory.title}
         description={t.projectSettings.git.rollbackHistory.retentionHint}
-        icon={RotateCcw}
+        icon={"rotate-left"}
         iconTone="primary"
       >
         <ProjectRollbackSettings
@@ -517,7 +501,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
                     })
                   : t.projectSettings.advanced.migration.description
             }
-            icon={ArrowRightLeft}
+            icon={"arrows-left-right"}
             // Amber only when the run has STOPPED and wants something: an advancing transfer
             // needs nothing from the operator, and amber that means "in progress" here would
             // clash with amber meaning "act now" everywhere else in the app.
@@ -566,7 +550,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
           <SectionCard
             title={t.projectSettings.advanced.routing.title}
             description={t.projectSettings.advanced.routing.description}
-            icon={Waypoints}
+            icon={"network"}
             iconTone="primary"
             collapsible
           >
@@ -589,7 +573,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
             <SectionCard
               title={t.projectSettings.advanced.internalAlias.title}
               description={t.projectSettings.advanced.internalAlias.description}
-              icon={Network}
+              icon={"network"}
               iconTone="primary"
               collapsible
             >
@@ -606,7 +590,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
         <SectionCard
           title={t.importProject.buildSettings.healthCheck.title}
           description={t.importProject.buildSettings.healthCheck.subtitle}
-          icon={Activity}
+          icon={"activity"}
           iconTone="primary"
           collapsible
         >
@@ -622,7 +606,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
         <SectionCard
           title={t.projectSettings.advanced.cache.title}
           description={t.projectSettings.advanced.cache.description}
-          icon={Package}
+          icon={"archive"}
           iconTone="amber"
         >
           <div>
@@ -633,13 +617,13 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
               className="flex w-full items-center gap-3 rounded-xl border border-border/50 bg-muted/20 px-4 py-3 text-start transition-colors hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-                <Hammer className="size-4 text-primary" />
+                <UiIcon name="wrench" className="size-4 text-primary" />
               </div>
               <div className="min-w-0">
                 <p className="text-[13px] font-medium text-foreground">{t.projectSettings.advanced.cache.clearBuild}</p>
                 <p className="text-[12px] text-muted-foreground">{t.projectSettings.advanced.cache.clearBuildDesc}</p>
               </div>
-              {loading.clearBuildCache && <Loader2 className="ms-auto size-4 animate-spin text-muted-foreground" />}
+              {loading.clearBuildCache && <UiIcon name="spinner" className="ms-auto size-4 animate-spin text-muted-foreground" />}
             </button>
           </div>
         </SectionCard>
@@ -648,8 +632,8 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
         {selfHosted && user?.role === "admin" && projectId && (
           <SectionCard
             title="Export project"
-            description="Download this project's environments, metadata, keys, and related server connections for another control plane."
-            icon={Download}
+            description="Download all project settings, environment values, and credentials as plain JSON."
+            icon={"download"}
             iconTone="primary"
             collapsible
           >
@@ -662,7 +646,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
         <SectionCard
           title={t.projectSettings.advanced.transfer.title}
           description={t.projectSettings.advanced.transfer.description}
-          icon={ArrowRightLeft}
+          icon={"arrows-left-right"}
           iconTone="primary"
         >
           <TransferOptions
@@ -676,7 +660,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
         <div className="overflow-hidden rounded-2xl border border-danger-border bg-card">
           <div className="flex items-start gap-3 border-b border-danger-border px-5 py-4">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-danger-bg">
-              <AlertTriangle className="size-4 text-danger" />
+              <UiIcon name="warning" className="size-4 text-danger" />
             </div>
             <div className="min-w-0 flex-1">
               <h3 className="text-[14px] font-semibold text-danger">{t.projectSettings.advanced.danger.title}</h3>
@@ -691,7 +675,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
               onClick={() => setShowDeleteModal(true)}
               className="mt-4 inline-flex h-9 items-center gap-2 rounded-xl bg-danger-solid px-4 text-[13px] font-medium text-white transition-colors hover:bg-danger-solid/90"
             >
-              <Trash2 className="size-3.5" />
+              <UiIcon name="trash" className="size-3.5" />
               {t.projectSettings.advanced.danger.delete}
             </button>
           </div>
@@ -719,11 +703,11 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
 const ROUTE_MODES: {
   value: RouteStrategy;
   key: "auto" | "loopbackPort" | "containerIp";
-  icon: React.ComponentType<{ className?: string }>;
+  icon: IconName;
 }[] = [
-  { value: "auto", key: "auto", icon: Zap },
-  { value: "loopback-port", key: "loopbackPort", icon: ShieldCheck },
-  { value: "container-ip", key: "containerIp", icon: Network },
+  { value: "auto", key: "auto", icon: "bolt" },
+  { value: "loopback-port", key: "loopbackPort", icon: "shield-check" },
+  { value: "container-ip", key: "containerIp", icon: "network" },
 ];
 
 function RoutingStrategyCard({
@@ -782,7 +766,7 @@ function RoutingStrategyCard({
               } disabled:opacity-50`}
             >
               <div className="mb-3 flex h-8 w-8 items-center justify-center rounded-lg bg-muted">
-                <ModeIcon className="size-4 text-muted-foreground" />
+                <UiIcon name={ModeIcon} className="size-4 text-muted-foreground" />
               </div>
               <p className="text-[13px] font-medium text-foreground">
                 {t.projectSettings.advanced.routing.modes[key].label}
@@ -792,7 +776,7 @@ function RoutingStrategyCard({
               </p>
               {active && (
                 <div className="absolute top-3 end-3">
-                  <Check className="size-4 text-primary" />
+                  <UiIcon name="check" className="size-4 text-primary" />
                 </div>
               )}
             </button>
@@ -958,9 +942,9 @@ function ReadinessCard({
 /* ── Transfer & Clone ─────────────────────────────────────────────── */
 
 const TARGET_META: Record<string, { icon: React.ReactNode }> = {
-  local: { icon: <HardDrive className="size-4" /> },
-  server: { icon: <Server className="size-4" /> },
-  cloud: { icon: <Cloud className="size-4" /> },
+  local: { icon: <UiIcon name="hard-drive" className="size-4" /> },
+  server: { icon: <UiIcon name="server" className="size-4" /> },
+  cloud: { icon: <UiIcon name="cloud" className="size-4" /> },
 };
 
 function TransferOptions({
@@ -1025,7 +1009,7 @@ function TransferOptions({
           className="flex items-center gap-3 rounded-xl border border-dashed border-border/50 bg-muted/10 px-4 py-3 text-start transition-colors hover:border-border hover:bg-muted/30"
         >
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-            <Copy className="size-4" />
+            <UiIcon name="copy" className="size-4" />
           </div>
           <div className="min-w-0">
             <p className="text-[13px] font-medium text-foreground">{t.projectSettings.advanced.transfer.clone}</p>

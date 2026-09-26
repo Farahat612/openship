@@ -21,6 +21,8 @@ export function IssueGroup({
   busyId,
   onResolve,
   onInfraFix,
+  onRecheck,
+  rechecking,
 }: {
   scope: IssueScope;
   issues: SystemIssue[];
@@ -30,6 +32,8 @@ export function IssueGroup({
   busyId: string | null;
   onResolve: (issue: SystemIssue) => void;
   onInfraFix: (issue: SystemIssue) => void;
+  onRecheck?: () => void;
+  rechecking?: boolean;
 }) {
   const { t } = useI18n();
   const c = t.issues;
@@ -38,6 +42,7 @@ export function IssueGroup({
   return (
     <AlertPanel
       tone={panelTone(issues[0]!.severity, standAlone)}
+      density="comfortable"
       icon={SCOPE_ICON[scope]}
       title={c.scopes[scope]}
       subtitle={c.scopeSubtitles[scope]}
@@ -48,9 +53,12 @@ export function IssueGroup({
           <IssueRow
             key={issue.id}
             issue={issue}
+            density="comfortable"
             busy={busyId === issue.id}
             onResolve={onResolve}
             onInfraFix={onInfraFix}
+            onRecheck={onRecheck}
+            rechecking={rechecking}
           />
         ))}
       </ul>

@@ -1,6 +1,6 @@
 import { api } from "./client";
 import { endpoints } from "./endpoints";
-import type { ComposeAdvanced, ComposeAdvancedPatch } from "@repo/core";
+import { hasRelativeVolumeMounts, type ComposeAdvanced, type ComposeAdvancedPatch } from "@repo/core";
 import type {
   ServiceEnvironment,
   ServiceEnvironmentInput,
@@ -49,26 +49,27 @@ export function sortServicesByPublicFirst<T extends { exposed?: boolean | null }
  *     internal IP, no Redeploy, no build page.
  */
 export function serviceUsesDeployPipeline(
-  service: { kind?: "compose" | "monorepo" | string | null; build?: string | null },
+  service: { kind?: "compose" | "monorepo" | string | null; build?: string | null; volumes?: string[] | null },
   projectType?: string | null,
 ): boolean {
   return (
     projectType === "services" ||
     projectType === "monorepo" ||
     serviceKind(service) === "monorepo" ||
-    Boolean(service.build)
+    Boolean(service.build) ||
+    hasRelativeVolumeMounts(service.volumes)
   );
 }
 
 /**
  * Can this service be launched by the decoupled Start path (pull image + run)?
- * A source-built service with no image can't — it only builds through the
- * deploy pipeline, so it must be started via Redeploy rather than Start.
+ * An image must already exist, and repository bind mounts need the deployment
+ * pipeline to prepare their files. Named volumes can be created during Start.
  */
 export function serviceCanStartWithoutBuild(
-  service: { build?: string | null; image?: string | null },
+  service: { build?: string | null; image?: string | null; volumes?: string[] | null },
 ): boolean {
-  return !(service.build && !service.image);
+  return Boolean(service.image?.trim()) && !hasRelativeVolumeMounts(service.volumes);
 }
 
 export interface Service {

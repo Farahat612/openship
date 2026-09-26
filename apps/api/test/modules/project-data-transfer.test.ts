@@ -30,7 +30,7 @@ import {
   importPreparedInstance,
   previewInstanceImport,
 } from "../../src/modules/system/data-transfer/import.service";
-import { openSecretBundle } from "../../src/modules/system/data-transfer/passphrase-crypto";
+import { openTransferSecrets } from "../../src/modules/system/data-transfer/passphrase-crypto";
 import {
   createFileUpload,
   finalizeFileUpload,
@@ -327,10 +327,10 @@ async function source() {
       publicKey: "other-public-key",
     });
 }
-async function exportFile(overrides: Partial<ExportSelection> = {}): Promise<DataTransferFile> {
+async function exportFile(overrides: Partial<ExportSelection> = {}, passwordProtected = true): Promise<DataTransferFile> {
   return JSON.parse(
     JSON.stringify(
-      await exportInstance({ passphrase: password, selection: { ...selection, ...overrides } }),
+      await exportInstance({ passphrase: passwordProtected ? password : undefined, selection: { ...selection, ...overrides } }),
     ),
   );
 }
@@ -417,7 +417,7 @@ describe("project control-plane export and import", () => {
     ])
       expect(JSON.stringify(file)).not.toContain(value);
     expect(file.manifest?.projects).toHaveLength(3);
-    const secrets = openSecretBundle(file.secrets!, password);
+    const secrets = openTransferSecrets(file.secrets, password)!;
     expect(secrets.entries).toContainEqual(
       expect.objectContaining({
         table: "service",
@@ -427,17 +427,37 @@ describe("project control-plane export and import", () => {
     );
   });
 
-  it("round-trips into another workspace, reuses the same server, remaps snapshot targets, and restores every secret transactionally", async () => {
+  it("exports readable environment values, keys, and service configuration without a password", async () => {
     await source();
-    const file = await exportFile();
+    const file = await exportFile({}, false);
+    expect(file.envelopeVersion).toBe(3);
+    expect(file.secrets).toMatchObject({ encoding: "plaintext", version: 1 });
+    expect(file.secrets).not.toHaveProperty("kdf");
+    for (const value of [
+      "environment-secret", "service-secret", "inline-secret", "private-file-contents",
+      "frozen-compose-secret", "snapshot-secret", "project-clone-token", "repo-private-key",
+      "backup-trigger-secret", "git-app-private-key", "registry-secret", "dns-secret",
+      "source-ssh-private-key", "backup-ssh-password",
+    ]) expect(JSON.stringify(file)).toContain(value);
+    expect(file.manifest?.servers).toContainEqual(expect.objectContaining({
+      name: "App host", host: "203.0.113.10",
+    }));
+    expect(file.dump.tables.project!.map((row) => row.id).sort()).toEqual(["database", "staging", "web"]);
+  });
+
+  it.each([true, false])("round-trips all values, reuses the same server and remaps targets (password protected: %s)", async (passwordProtected) => {
+    await source();
+    const file = await exportFile({}, passwordProtected);
     await destination();
     const preview = await previewInstanceImport({ file, context });
     expect(preview.blockers).toEqual([]);
+    expect(preview.hasSecrets).toBe(true);
+    expect(preview.requiresPassphrase).toBe(passwordProtected);
     expect(preview.servers).toContainEqual(
       expect.objectContaining({ id: "source_server", action: "reuse", targetId: "target_server" }),
     );
     expect(await db.select().from(schema.project)).toHaveLength(0); // preview cannot write
-    const result = await importInstance({ file, passphrase: password, mode: "merge", context });
+    const result = await importInstance({ file, passphrase: passwordProtected ? password : undefined, mode: "merge", context });
     expect(result.projectsCreated).toBe(3);
     const [project] = await db.select().from(schema.project).where(eq(schema.project.id, "web"));
     expect(project).toMatchObject({
@@ -867,7 +887,7 @@ describe("project control-plane export and import", () => {
     },
   );
 
-  it("checks the destination cloud account and allows an independent environment subset", async () => {
+  it.each([true, false])("checks the Cloud account and allows an independent subset (password protected: %s)", async (passwordProtected) => {
     await source();
     await db
       .update(schema.project)
@@ -877,7 +897,11 @@ describe("project control-plane export and import", () => {
       connected: true,
       user: { name: "Source", email: "source@example.test" },
     });
-    const file = await exportFile();
+    const file = await exportFile({}, passwordProtected);
+    const passphrase = passwordProtected ? password : undefined;
+    expect(file.manifest?.cloudAccounts).toContainEqual({
+      organizationId: "org_source", email: "source@example.test",
+    });
     await destination();
     vi.mocked(getCloudConnectionStatusForOrg).mockResolvedValue({
       connected: true,
@@ -887,27 +911,35 @@ describe("project control-plane export and import", () => {
       "Cloud account mismatch",
     );
     await expect(
-      importInstance({ file, passphrase: password, mode: "merge", context }),
+      importInstance({ file, passphrase, mode: "merge", context }),
     ).rejects.toThrow("Cloud account mismatch");
     expect(await db.select().from(schema.project)).toHaveLength(0);
     await importInstance({
       file,
-      passphrase: password,
+      passphrase,
       mode: "merge",
       context,
       selection: { scope: "projects", projectIds: ["staging"] },
     });
     expect((await db.select().from(schema.project)).map((row) => row.id)).toEqual(["staging"]);
+    vi.mocked(getCloudConnectionStatusForOrg).mockResolvedValue({
+      connected: true,
+      user: { name: "Source", email: "source@example.test" },
+    });
+    const result = await importInstance({ file, passphrase, mode: "merge", context });
+    expect(result.projectsCreated).toBe(2);
+    expect((await db.select().from(schema.project).where(eq(schema.project.id, "web")))[0]!.cloudWorkspaceId)
+      .toBe("cloud-workspace");
   });
 
-  it("keeps the complete import atomic and cannot apply a secret to an unselected row", async () => {
+  it.each([true, false])("keeps import atomic and cannot apply secrets to unselected rows (password protected: %s)", async (passwordProtected) => {
     await source();
-    const file = await exportFile();
+    const file = await exportFile({}, passwordProtected);
     await destination();
     await expect(
       importInstance({
         file,
-        passphrase: password,
+        passphrase: passwordProtected ? password : undefined,
         mode: "merge",
         context,
         onBeforeCommit: async () => {
@@ -917,7 +949,7 @@ describe("project control-plane export and import", () => {
     ).rejects.toThrow("abort-before-commit");
     expect(await db.select().from(schema.project)).toHaveLength(0);
     expect(await db.select().from(schema.githubDeployKey)).toHaveLength(0);
-    const bundle = openSecretBundle(file.secrets!, password);
+    const bundle = openTransferSecrets(file.secrets, password)!;
     bundle.entries.push({
       table: "servers",
       id: "target_server",
@@ -931,6 +963,18 @@ describe("project control-plane export and import", () => {
       .from(schema.servers)
       .where(eq(schema.servers.id, "target_server"));
     expect(decryptSecretField(server!.sshPassword)).toBe("destination-password");
+  });
+
+  it("rejects malformed plaintext values before importing any records", async () => {
+    await source();
+    const file = await exportFile({}, false);
+    file.secrets = { encoding: "plaintext", version: 1, entries: [{
+      table: "env_var", id: "env_service", column: "value", scheme: "scalar",
+    }] };
+    await destination();
+    await expect(previewInstanceImport({ file, context })).rejects.toThrow("invalid secret value");
+    await expect(importInstance({ file, mode: "merge", context })).rejects.toThrow("invalid secret value");
+    expect(await db.select().from(schema.project)).toHaveLength(0);
   });
 
   it("previews a chunked file without consuming it, then imports the selected subset using those chunks", async () => {

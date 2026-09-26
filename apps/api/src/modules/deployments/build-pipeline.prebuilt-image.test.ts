@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   claimBuildExecution: vi.fn(),
   cancelUnclaimedBuild: vi.fn(),
   acknowledgeBuildExecutionFinished: vi.fn(),
+  findCloudDockerBinding: vi.fn(),
   hasLiveBuildExecution: vi.fn(),
   updateDeploymentStatus: vi.fn(),
   updateBuildSession: vi.fn(),
@@ -25,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   reportPipelineError: vi.fn(),
   setDeploymentStatus: vi.fn(),
   onDeploymentReady: vi.fn(),
+  createSession: vi.fn(),
   appendLog: vi.fn(),
   ensureRoutingReady: vi.fn(),
   prepareTargetPinnedHostPorts: vi.fn(),
@@ -39,6 +41,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@repo/db", () => ({
   schema: {},
   repos: {
+    cloudDockerWorkspace: { find: (...args: unknown[]) => mocks.findCloudDockerBinding(...args) },
     deployment: {
       findBuildSessionByDeploymentId: (...args: unknown[]) =>
         mocks.findBuildSessionByDeploymentId(...args),
@@ -146,7 +149,7 @@ vi.mock("@repo/platform/engine/lib/resources", () => ({
 vi.mock("../../lib/request-context", () => ({ buildBackgroundContext: vi.fn(() => ({})) }));
 
 vi.mock("@repo/platform/engine/modules/deployments/session-manager", () => ({
-  createSession: vi.fn(),
+  createSession: (...args: unknown[]) => mocks.createSession(...args),
   appendLog: (...args: unknown[]) => mocks.appendLog(...args),
   updateStatus: vi.fn(),
   promptUser: vi.fn(),
@@ -266,7 +269,10 @@ function allocatePinnedHostPort(input: {
 
 import { platform } from "@repo/platform/engine/lib/platform-config";
 import { resolveDeploymentPlatform } from "@repo/platform/engine/lib/deployment-runtime";
-import { kickoffBuild } from "@repo/platform/engine/modules/deployments/build-pipeline";
+import {
+  kickoffBuild,
+  resolveServicePipelineMode,
+} from "@repo/platform/engine/modules/deployments/build-pipeline";
 import {
   drainDeploymentExecutions,
   registerDeploymentExecution,
@@ -368,6 +374,7 @@ async function run(dep = deployment(), projectOverrides: Record<string, unknown>
 describe("single-app prebuilt release-image pipeline", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.findCloudDockerBinding.mockResolvedValue(undefined);
     const adapter = runtime();
     resolvedRuntime = adapter;
 
@@ -593,6 +600,26 @@ describe("single-app prebuilt release-image pipeline", () => {
     expect(mocks.prepareImage).not.toHaveBeenCalled();
     expect(mocks.onSuccess).not.toHaveBeenCalled();
     expect(mocks.acknowledgeBuildExecutionFinished).not.toHaveBeenCalled();
+  });
+
+  it("fails and releases the claimed build when the live session cache is full", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.createSession.mockImplementationOnce(() => {
+      throw new Error("Cache capacity reached; all entries are in use");
+    });
+    try {
+      await run();
+      await drainDeploymentExecutions();
+
+      expect(mocks.updateDeploymentStatus).toHaveBeenCalledWith("deployment-1", "failed");
+      expect(mocks.updateBuildSession).toHaveBeenCalledWith("build-session-1", { status: "failed" });
+      expect(mocks.acknowledgeBuildExecutionFinished).toHaveBeenCalledWith("build-session-1");
+      expect(requestDeploymentCancellation("deployment-1")).toBe(false);
+      expect(mocks.prepareImage).not.toHaveBeenCalled();
+      expect(mocks.runDeployPipeline).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("inventories migrated edge routes before reserving a loopback host port", async () => {
@@ -828,6 +855,27 @@ describe("single-app prebuilt release-image pipeline", () => {
     expect(mocks.deploy).not.toHaveBeenCalled();
     expect(mocks.runDeployPipeline).not.toHaveBeenCalled();
     expect(mocks.build).not.toHaveBeenCalled();
+  });
+});
+
+describe("Cloud Docker placement stays on the service pipeline", () => {
+  it("refuses a single-app request against a frozen Docker workspace", async () => {
+    await expect(resolveServicePipelineMode(project(), {
+      ...snapshot(), cloudDockerWorkspace: { projectId: "project-1", workspaceId: "workspace-a" },
+    } as never)).rejects.toMatchObject({ code: "CLOUD_DOCKER_SERVICE_MODE_REQUIRED" });
+  });
+
+  it("checks the durable binding when a new snapshot omits its workspace metadata", async () => {
+    mocks.findCloudDockerBinding.mockResolvedValueOnce({ workspaceId: "workspace-a" });
+    await expect(resolveServicePipelineMode(project({ cloudWorkspaceId: "workspace-a" }), snapshot() as never))
+      .rejects.toMatchObject({ code: "CLOUD_DOCKER_SERVICE_MODE_REQUIRED" });
+    expect(mocks.findCloudDockerBinding).toHaveBeenLastCalledWith("project-1", "org-1");
+  });
+
+  it("keeps native single-app workspaces on their original pipeline", async () => {
+    mocks.findCloudDockerBinding.mockResolvedValueOnce(undefined);
+    await expect(resolveServicePipelineMode(project({ cloudWorkspaceId: "native-a" }), snapshot() as never))
+      .resolves.toMatchObject({ useSingleAppPipeline: true, useServicePipeline: false });
   });
 });
 

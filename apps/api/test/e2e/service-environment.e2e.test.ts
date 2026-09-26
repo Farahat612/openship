@@ -65,6 +65,11 @@ describeDockerE2E("service environment apply through the HTTP API and real Docke
     imageTag = `openship/env-apply-e2e:bld_${project.id}`;
     await runtime.docker.getImage("busybox:latest").tag({ repo: "openship/env-apply-e2e", tag: `bld_${project.id}` });
     network = await runtime.docker.createNetwork({ Name: `env-apply-${project.id}`, Driver: "bridge" });
+    // Docker 28 and earlier require an explicit subnet to retain an IP during
+    // replacement. Let Docker choose a free pool, then declare it for this lab.
+    const { IPAM } = await network.inspect();
+    await network.remove();
+    network = await runtime.docker.createNetwork({ Name: `env-apply-${project.id}`, Driver: "bridge", IPAM });
     const volumeName = `env-apply-${project.id}`;
     await runtime.docker.createVolume({ Name: volumeName });
     volumes.add(volumeName);
@@ -185,6 +190,35 @@ describeDockerE2E("service environment apply through the HTTP API and real Docke
       value: ENV_MASK,
     });
     expect((await original.inspect()).State.StartedAt).toBe(before.State.StartedAt);
+  });
+
+  it("leaves the service and its routes untouched when Docker rejects replacement networking", async () => {
+    const create = runtime.docker.createContainer.bind(runtime.docker);
+    const spy = vi.spyOn(runtime.docker, "createContainer").mockImplementationOnce(config => {
+      const endpoints = config.NetworkingConfig!.EndpointsConfig!;
+      const name = Object.keys(endpoints)[0]!;
+      // Exercise the real daemon's validation, as on a network that cannot
+      // reserve the current IP. The existing endpoint remains valid.
+      return create({ ...config, NetworkingConfig: { EndpointsConfig: {
+        ...endpoints,
+        [name]: { ...endpoints[name], IPAMConfig: { IPv4Address: "203.0.113.1" } },
+      } } });
+    });
+    try {
+      await expect(client.services.applyEnvironment(project.id, service.id))
+        .rejects.toMatchObject({ code: "SERVICE_ENVIRONMENT_APPLY_FAILED" });
+      const unchanged = await original.inspect();
+      expect(unchanged.State.Running).toBe(true);
+      expect(unchanged.State.StartedAt).toBe(before.State.StartedAt);
+      expect(unchanged.Name).toBe(before.Name);
+      expect(unchanged.Config.Env).toEqual(before.Config.Env);
+      expect(unchanged.NetworkSettings.Networks).toEqual(before.NetworkSettings.Networks);
+      expect((await repos.service.listByDeployment(deployment.id))
+        .find(row => row.serviceId === service.id)?.containerId).toBe(original.id);
+      expect(await exec(probe, ["wget", "-qO-", "http://api-alias:3000"])).toBe("old");
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("applies saved env with a missing local build tag, preserving data, networking, limits and sibling uptime", async () => {

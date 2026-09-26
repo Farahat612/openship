@@ -8,20 +8,22 @@
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { dirname, join, posix } from "node:path";
 
 import type {
   AmbientGitVia,
   MultiServiceRuntimeAdapter,
   ResourceConfig,
   BuildResult,
+  BuildConfig,
 } from "@repo/adapters";
-import { BuildLogger, STATIC_RELEASE_BASE } from "@repo/adapters";
-import { composeBuildIssues, validateImageReference, type ComposeAdvanced } from "@repo/core";
+import { BuildLogger, CloudDockerRuntime, STATIC_RELEASE_BASE } from "@repo/adapters";
+import { composeBuildIssues, hasRelativeVolumeMounts, validateImageReference, type ComposeAdvanced } from "@repo/core";
 import { repos, type Deployment, type Project, type Service } from "@repo/db";
 
 import {
   createDockerfileBuildConfig,
+  createBuildConfig,
   createMonorepoSourceBuildConfig,
   type BuildConfigSnapshotLike,
 } from "../build-config";
@@ -131,15 +133,16 @@ function hasInlineBuild(service: { advanced: unknown }): boolean {
 
 interface InlineBuildContexts {
   /** serviceId → the shared context root + this service's Dockerfile inside it. */
-  byServiceId: Map<string, { root: string; dockerfile: string }>;
+  byServiceId: Map<string, { root?: string; dockerfile: string }>;
+  /** Cloud Docker writes these validated contents directly into its workspace. */
+  files?: BuildConfig["inlineSourceFiles"];
   cleanup(): Promise<void>;
 }
 
 /**
- * Materialize every inline build context to a subdir under ONE shared temp root
- * on the orchestrator, and hand back the Dockerfile each service should build
- * (relative to that root, which `prepareSourceTree` consumes as `localPath` —
- * no git clone).
+ * Validate each inline context under its service-name subdirectory. Local/SSH
+ * builds receive one temporary localPath; Cloud Docker receives the same files
+ * as contents to write inside its workspace. Neither source requires Git.
  *
  * One shared root rather than one per service for two reasons: `runtime.buildImages`
  * builds a whole batch against a single tree (specs[0]'s), and the subdir IS the
@@ -149,9 +152,9 @@ interface InlineBuildContexts {
  * Callers own `cleanup()` once the build phase is done; a throw in here cleans up
  * after itself, so a failed materialize never leaks a temp dir per deploy.
  */
-async function materializeInlineBuildContexts(buildable: Service[]): Promise<InlineBuildContexts> {
+async function materializeInlineBuildContexts(buildable: Service[], inMemory = false): Promise<InlineBuildContexts> {
   const inline = buildable.filter(hasInlineBuild);
-  const byServiceId = new Map<string, { root: string; dockerfile: string }>();
+  const byServiceId: InlineBuildContexts["byServiceId"] = new Map();
   if (inline.length === 0) return { byServiceId, cleanup: async () => {} };
 
   // One batch = one tree, so an inline context and a repo checkout can't coexist in
@@ -169,8 +172,20 @@ async function materializeInlineBuildContexts(buildable: Service[]): Promise<Inl
     );
   }
 
-  const root = await mkdtemp(join(tmpdir(), "openship-catalog-build-"));
-  const cleanup = () => rm(root, { recursive: true, force: true }).catch(() => {});
+  const root = inMemory ? undefined : await mkdtemp(join(tmpdir(), "openship-catalog-build-"));
+  const files: NonNullable<BuildConfig["inlineSourceFiles"]> = [];
+  const cleanup = async () => {
+    if (root) await rm(root, { recursive: true, force: true }).catch(() => {});
+  };
+  const write = async (path: string, content: string) => {
+    if (root) {
+      const dest = join(root, ...path.split("/"));
+      await mkdir(dirname(dest), { recursive: true });
+      await writeFile(dest, content, "utf-8");
+    } else {
+      files.push({ path, content });
+    }
+  };
 
   try {
     const subdirOwner = new Map<string, string>();
@@ -200,15 +215,14 @@ async function materializeInlineBuildContexts(buildable: Service[]): Promise<Inl
       // Exactly one segment BELOW the root: sanitizing preserves dots, so a service
       // named ".." would otherwise write its context into os.tmpdir() — outside the
       // directory cleanup() removes.
-      const serviceDir = join(root, subdir);
-      if (dirname(serviceDir) !== root) {
+      const serviceDir = posix.resolve("/", subdir);
+      if (serviceDir === "/" || posix.dirname(serviceDir) !== "/") {
         throw new Error(
           `Service "${service.name}" maps to an invalid build-context subdir "${subdir}".`,
         );
       }
 
-      await mkdir(serviceDir, { recursive: true });
-      await writeFile(join(serviceDir, "Dockerfile"), build.dockerfile, "utf-8");
+      await write(`${subdir}/Dockerfile`, build.dockerfile);
 
       for (const file of build.files ?? []) {
         // Same unvalidated-blob reason as the Dockerfile check above.
@@ -220,13 +234,12 @@ async function materializeInlineBuildContexts(buildable: Service[]): Promise<Inl
         // A context file must stay inside its service dir, and must not BE it (that
         // would writeFile over a directory). Matches a real parent ref only, not a
         // filename that merely starts with two dots ("..keep", "..dockerignore").
-        const dest = join(serviceDir, file.path);
-        const rel = relative(serviceDir, dest);
-        if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+        const path = file.path.replaceAll("\\", "/");
+        const dest = posix.resolve(serviceDir, path);
+        if (path.includes("\0") || posix.isAbsolute(path) || !dest.startsWith(`${serviceDir}/`)) {
           throw new Error(`Invalid build file path "${file.path}" for service "${service.name}"`);
         }
-        await mkdir(dirname(dest), { recursive: true });
-        await writeFile(dest, file.content, "utf-8");
+        await write(dest.slice(1), file.content);
       }
 
       byServiceId.set(service.id, { root, dockerfile: `${subdir}/Dockerfile` });
@@ -236,7 +249,7 @@ async function materializeInlineBuildContexts(buildable: Service[]): Promise<Inl
     throw error;
   }
 
-  return { byServiceId, cleanup };
+  return { byServiceId, ...(inMemory ? { files } : {}), cleanup };
 }
 
 /**
@@ -435,6 +448,7 @@ export async function buildComposeImages(opts: {
   /** Env-only refresh subset (⊆ targetServiceIds): recreated at deploy from
    *  their existing image, so they're excluded from the build here. */
   refreshServiceIds?: Set<string>;
+  signal?: AbortSignal;
 }): Promise<ComposeBuildImagesResult> {
   const services = await repos.service.listByProject(opts.project.id);
   const enabled = services.filter((service) => service.enabled);
@@ -526,11 +540,40 @@ export async function buildComposeImages(opts: {
       Boolean(service.image || (service.advanced as ComposeAdvanced | null)?.imageTemplate),
   );
 
-  // Repo-less catalog builds need their context on disk before any spec is built,
-  // and gone once the build phase ends (the images live on the deploy host).
-  const inlineBuilds = await materializeInlineBuildContexts(buildable);
+  const cloudDocker = opts.runtime instanceof CloudDockerRuntime ? opts.runtime : undefined;
+  const sourceMounted = enabled.filter(service =>
+    !isNewerThanRelease(service) &&
+    (!opts.targetServiceIds || opts.targetServiceIds.has(service.id)) &&
+    hasRelativeVolumeMounts(service.volumes),
+  );
+  // A relative mount can reference an inline sibling's files even when that
+  // sibling's image is retained or outside this deploy's service scope.
+  const mountedInlineSources = sourceMounted.length > 0
+    ? enabled.filter(service => !isNewerThanRelease(service) && hasInlineBuild(service))
+    : [];
+  const contextServices = cloudDocker
+    ? [...new Map([...buildable, ...mountedInlineSources].map(service => [service.id, service])).values()]
+    : buildable;
+  const inlineBuilds = await materializeInlineBuildContexts(contextServices, Boolean(cloudDocker));
 
   try {
+    if (cloudDocker && (buildable.length > 0 || sourceMounted.length > 0)) {
+      const sourceConfig = createBuildConfig({
+        ...opts,
+        sessionId: opts.buildSessionId,
+        envVars: opts.buildEnvVars,
+        resources: opts.buildResources,
+        overrides: inlineBuilds.files
+          ? { inlineSourceFiles: inlineBuilds.files, localPath: undefined, rootDirectory: "" }
+          : {},
+      });
+      if (opts.gitSsh) sourceConfig.gitSsh = opts.gitSsh;
+      if (opts.gitAmbient) sourceConfig.gitAmbient = opts.gitAmbient;
+      const prepare = () => cloudDocker.prepareComposeSource(sourceConfig, opts.logger);
+      // Image-only operations need source only when mounting repository files.
+      // Select that source after the shared planner has chosen the services.
+      await (opts.signal ? cloudDocker.executor.runWithAbortSignal(opts.signal, prepare) : prepare());
+    }
     // This seeds the UI check-list immediately so users see every service.
     for (const service of enabled) {
       sessionManager.broadcastServiceStatus(opts.dep.id, {
@@ -659,7 +702,8 @@ export async function buildComposeImages(opts: {
       // serviceName. Inner step events are forwarded as plain service logs;
       // the outer orchestrator owns the top-level step lifecycle.
       const dnsDiagnostics =
-        opts.runtime.name === "docker" ? new ServiceBuildDnsDiagnostics(serviceNames) : undefined;
+        opts.runtime.name === "docker" || cloudDocker
+          ? new ServiceBuildDnsDiagnostics(serviceNames) : undefined;
       if (dnsDiagnostics) buildDnsDiagnostics.set(service.id, dnsDiagnostics);
       const serviceLogger = new BuildLogger(
         (entry) => {
@@ -755,7 +799,9 @@ export async function buildComposeImages(opts: {
               ),
               // Inline catalog build: the source IS the materialized root, so
               // prepareSourceTree copies it instead of cloning a repo.
-              ...(inlineBuild ? { localPath: inlineBuild.root } : {}),
+              ...(inlineBuild ? inlineBuilds.files
+                ? { inlineSourceFiles: inlineBuilds.files, localPath: undefined }
+                : { localPath: inlineBuild.root } : {}),
               hasServer: true,
             },
           });

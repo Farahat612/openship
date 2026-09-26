@@ -1,18 +1,8 @@
 "use client";
 
+import { Icon as UiIcon, type IconName } from "@repo/ui/icons";
+
 import { useState, useEffect, useCallback, useRef } from "react";
-import {
-  Github,
-  ExternalLink,
-  Unplug,
-  RefreshCw,
-  Download,
-  Terminal,
-  Key,
-  KeyRound,
-  Loader2,
-  ChevronDown,
-} from "lucide-react";
 import { useRouter } from "next/navigation";
 import {
   useGitHub,
@@ -32,6 +22,7 @@ import {
 
 import { SettingsSection } from "./SettingsSection";
 import { useI18n, interpolate } from "@/components/i18n-provider";
+import { CreateGitHubTokenLink } from "@/components/github/CreateGitHubTokenLink";
 
 const EMPTY_STATE: GitHubConnectionState = {
   sources: { openshipApp: { connected: false }, ghCli: { available: false } },
@@ -64,9 +55,8 @@ interface Capabilities {
 
 export function GitHubConnection() {
   // The Settings card owns the App-connection truth. The library context
-  // (useGitHub) is now gh-first and does NOT probe the App, so we fetch
-  // GET /github/status here — the cloud round-trip for the App badge +
-  // installations happens on THIS page only, never on a plain library browse.
+  // (useGitHub) can use a healthy local identity without probing the App, so we
+  // fetch GET /github/status here for both sources and their health.
   // Actions (connect/disconnect/connecting) still come from the shared context.
   const { connecting, connect, disconnect: ctxDisconnect, cliAction } = useGitHub();
   const { t } = useI18n();
@@ -92,6 +82,7 @@ export function GitHubConnection() {
   // the method list drops full-width below, instead of a w-full <details> that
   // wraps the toggle onto its own line under the button.
   const [showChangeMethod, setShowChangeMethod] = useState(false);
+  const [showTokenForm, setShowTokenForm] = useState(false);
   const statusRequest = useRef(0);
 
   const loadStatus = useCallback(async (force = false) => {
@@ -271,10 +262,35 @@ export function GitHubConnection() {
   // card used to render the connect chooser for both, so a revoked token looked
   // exactly like a fresh install while every clone using it failed.
   const ghProblem = state.sources.ghCli.problem;
+  const savedCredential = ghMethod === "token" || ghMethod === "device";
+  const tokenActions = savedCredential && can("token") ? (
+    <div className="flex flex-wrap items-center gap-3">
+      <button type="button" onClick={() => setShowTokenForm(true)} disabled={connecting}
+        className="text-xs font-medium text-foreground hover:underline disabled:opacity-50">
+        {t.settings.github.replaceToken}
+      </button>
+      <button type="button" disabled={connecting}
+        onClick={() => promptDisconnect("cli", ghMethodLabel, t.settings.github.ghCli.disconnectBody)}
+        className="text-xs font-medium text-muted-foreground hover:text-danger disabled:opacity-50">
+        {t.settings.github.clearToken}
+      </button>
+    </div>
+  ) : null;
+  const credentialProblem = ghProblem ? (
+    <CredentialProblem
+      problem={ghProblem}
+      methodLabel={ghMethodLabel}
+      checkedAt={state.sources.ghCli.checkedAt}
+      manageUrl={ghManageUrl}
+      manageLabel={ghManageLabel}
+      onRecheck={() => void loadStatus(true)}
+      actions={tokenActions}
+    />
+  ) : null;
 
   return (
     <SettingsSection
-      icon={Github}
+      icon={"github"}
       title={t.settings.github.title}
       description={
         loading
@@ -296,35 +312,43 @@ export function GitHubConnection() {
           onRefresh={() => void loadStatus(true)}
           isDesktop={isDesktop}
         />
+      ) : showTokenForm ? (
+        <TokenForm
+          message={t.settings.github.tokenEditorDescription}
+          onSaved={() => { setShowTokenForm(false); void loadStatus(true); }}
+          onCancel={() => setShowTokenForm(false)}
+        />
       ) : loading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
-          <div className="size-4 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
+          <UiIcon name="spinner" className="size-4 animate-spin text-muted-foreground" />
           {t.settings.github.checkingConnection}
         </div>
       ) : anyConnected ? (
         <div className="space-y-4">
+          {credentialProblem}
           {/* The identity that is actually authorizing clones, first. */}
           {ghConnected && (
-            <ActiveIdentity
-              icon={Terminal}
-              label={ghLogin ? `@${ghLogin}` : ghMethodLabel}
-              avatarUrl={state.sources.ghCli.avatarUrl}
-              method={ghMethodLabel}
-              active={activeIsGh}
-              // Forwarding is a DESKTOP relay (api: relayConfigEligible requires
-              // isDesktop). Passing it on self-hosted told the operator to flip a
-              // toggle that can't take effect there; the accurate note for that
-              // case is the remote-credential one below.
-              forwardEnabled={isDesktop ? forwardGit : undefined}
-              remoteNeedsOwnCredential={!isDesktop}
-              onManageForward={() => router.push("/settings?tab=tokens")}
-            />
+            <div className="space-y-2">
+              <ActiveIdentity
+                icon={"terminal"}
+                label={ghLogin ? `@${ghLogin}` : ghMethodLabel}
+                avatarUrl={state.sources.ghCli.avatarUrl}
+                method={ghMethodLabel}
+                active={activeIsGh}
+                // Forwarding is a DESKTOP relay (api: relayConfigEligible requires
+                // isDesktop). Self-hosted remote builds use their own credentials.
+                forwardEnabled={isDesktop ? forwardGit : undefined}
+                remoteNeedsOwnCredential={!isDesktop}
+                onManageForward={() => router.push("/settings?tab=tokens")}
+              />
+              {!ghProblem && tokenActions}
+            </div>
           )}
 
           {appConnected && !customSourcesConfigured && (
             <div className="space-y-3">
               <ActiveIdentity
-                icon={Github}
+                icon={"github"}
                 label={appLogin ? `@${appLogin}` : t.settings.github.methodApp}
                 method={t.settings.github.methodApp}
                 active={!activeIsGh}
@@ -345,7 +369,7 @@ export function GitHubConnection() {
                         />
                       ) : (
                         <div className="size-7 rounded-full bg-muted flex items-center justify-center">
-                          <Github className="size-3.5 text-muted-foreground" />
+                          <UiIcon name="github" className="size-3.5 text-muted-foreground" />
                         </div>
                       )}
                       <div className="flex-1 min-w-0">
@@ -371,7 +395,7 @@ export function GitHubConnection() {
                     }}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-muted/50 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
                   >
-                    <Download className="size-3.5" />
+                    <UiIcon name="download" className="size-3.5" />
                     {t.settings.github.addAccount}
                   </a>
                 )}
@@ -383,9 +407,9 @@ export function GitHubConnection() {
                     className="inline-flex items-center gap-1.5 rounded-lg bg-muted/50 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
                   >
                     {connecting ? (
-                      <Loader2 className="size-3.5 animate-spin" />
+                      <UiIcon name="spinner" className="size-3.5 animate-spin" />
                     ) : (
-                      <Download className="size-3.5" />
+                      <UiIcon name="download" className="size-3.5" />
                     )}
                     {t.settings.github.installApp}
                   </button>
@@ -397,7 +421,7 @@ export function GitHubConnection() {
                   className="inline-flex items-center gap-1.5 rounded-lg bg-muted/50 px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
                   {t.settings.github.manageOnGithub}
-                  <ExternalLink className="size-3" />
+                  <UiIcon name="arrow-up-right" className="size-3" />
                 </a>
               </div>
             </div>
@@ -418,7 +442,7 @@ export function GitHubConnection() {
                 className="inline-flex items-center gap-1.5 rounded-lg bg-muted/50 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
               >
                 {t.settings.github.changeMethod}
-                <ChevronDown
+                <UiIcon name="chevron-down"
                   className={`size-3.5 transition-transform ${showChangeMethod ? "rotate-180" : ""}`}
                 />
               </button>
@@ -433,7 +457,7 @@ export function GitHubConnection() {
                   className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
                   {ghManageLabel}
-                  <ExternalLink className="size-3" />
+                  <UiIcon name="arrow-up-right" className="size-3" />
                 </a>
               )}
               {(activeIsGh || !customSourcesConfigured) && (
@@ -451,7 +475,7 @@ export function GitHubConnection() {
                   }
                   className="ms-auto inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-danger transition-colors hover:bg-danger-bg"
                 >
-                  <Unplug className="size-3.5" />
+                  <UiIcon name="unplug" className="size-3.5" />
                   {t.settings.github.disconnect}
                 </button>
               )}
@@ -479,7 +503,7 @@ export function GitHubConnection() {
                 onConnectApp={() => connect("oauth")}
                 onConnectCloud={startCloudConnect}
                 onSsh={() => router.push("/servers")}
-                onToken={() => router.push("/settings?tab=tokens")}
+                onToken={() => setShowTokenForm(true)}
               />
             )}
           </div>
@@ -492,16 +516,7 @@ export function GitHubConnection() {
            When a credential IS stored and merely failed its check, the chooser
            alone would be a lie by omission — hence the banner above it. */
         <div className="space-y-4">
-          {ghProblem && (
-            <CredentialProblem
-              problem={ghProblem}
-              methodLabel={ghMethodLabel}
-              checkedAt={state.sources.ghCli.checkedAt}
-              manageUrl={ghManageUrl}
-              manageLabel={ghManageLabel}
-              onRecheck={() => void loadStatus(true)}
-            />
-          )}
+          {credentialProblem}
           <MethodChooser
             can={can}
             appRequiresCloud={
@@ -516,7 +531,7 @@ export function GitHubConnection() {
             onConnectApp={() => connect("oauth")}
             onConnectCloud={startCloudConnect}
             onSsh={() => router.push("/servers")}
-            onToken={() => router.push("/settings?tab=tokens")}
+            onToken={() => setShowTokenForm(true)}
           />
         </div>
       )}
@@ -541,8 +556,9 @@ function CredentialProblem(props: {
   /** Re-run the verify. The card checks on load, but "unreachable" is usually
    *  transient and re-checking beats making the operator reload the page. */
   onRecheck: () => void;
+  actions?: React.ReactNode;
 }) {
-  const { problem, methodLabel, checkedAt, manageUrl, manageLabel, onRecheck } = props;
+  const { problem, methodLabel, checkedAt, manageUrl, manageLabel, onRecheck, actions } = props;
   const { t } = useI18n();
   const rejected = problem === "rejected";
   // Locale-formatted and only as precise as it needs to be. Invalid/absent
@@ -560,9 +576,9 @@ function CredentialProblem(props: {
       }`}
     >
       {rejected ? (
-        <KeyRound className="size-4 mt-0.5 shrink-0 text-danger" />
+        <UiIcon name="key" className="size-4 mt-0.5 shrink-0 text-danger" />
       ) : (
-        <KeyRound className="size-4 mt-0.5 shrink-0 text-muted-foreground" />
+        <UiIcon name="key" className="size-4 mt-0.5 shrink-0 text-muted-foreground" />
       )}
       <div className="min-w-0 space-y-1">
         <p className={`text-sm font-medium ${rejected ? "text-danger" : "text-foreground"}`}>
@@ -587,7 +603,7 @@ function CredentialProblem(props: {
               className="inline-flex items-center gap-1 text-xs font-medium text-foreground underline underline-offset-2 hover:text-primary"
             >
               {manageLabel}
-              <ExternalLink className="size-3" />
+              <UiIcon name="arrow-up-right" className="size-3" />
             </a>
           )}
           <button
@@ -595,15 +611,16 @@ function CredentialProblem(props: {
             onClick={onRecheck}
             className="inline-flex items-center gap-1 text-xs font-medium text-foreground underline underline-offset-2 hover:text-primary"
           >
-            <RefreshCw className="size-3" />
+            <UiIcon name="refresh" className="size-3" />
             {t.settings.github.ghCli.recheck}
           </button>
           {checked && (
-            <span className="text-xs text-muted-foreground">
+            <span className="text-xs text-muted-foreground/70">
               {interpolate(t.settings.github.credentialCheckedAt, { time: checked })}
             </span>
           )}
         </div>
+        {actions}
       </div>
     </div>
   );
@@ -617,7 +634,7 @@ function CredentialProblem(props: {
  * lifts that) survive as a single inline note.
  */
 function ActiveIdentity(props: {
-  icon: typeof Github;
+  icon: IconName;
   label: string;
   method: string;
   active: boolean;
@@ -651,7 +668,7 @@ function ActiveIdentity(props: {
           <img src={avatarUrl} alt={label} className="size-8 shrink-0 rounded-full" />
         ) : (
           <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
-            <Icon className="size-4 text-muted-foreground" />
+            <UiIcon name={Icon} className="size-4 text-muted-foreground" />
           </span>
         )}
         <div className="min-w-0 flex-1">
@@ -674,7 +691,7 @@ function ActiveIdentity(props: {
             self-hosted → give each server its own credential (no relay there) */}
       {forwardEnabled === false && onManageForward && (
         <p className="flex items-start gap-2 px-1 text-xs leading-relaxed text-muted-foreground">
-          <KeyRound className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+          <UiIcon name="key" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
           <span>
             {t.settings.github.forwardOffHint}{" "}
             <button
@@ -689,7 +706,7 @@ function ActiveIdentity(props: {
       )}
       {remoteNeedsOwnCredential && (
         <p className="flex items-start gap-2 px-1 text-xs leading-relaxed text-muted-foreground">
-          <KeyRound className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+          <UiIcon name="key" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70" />
           <span>{t.settings.github.remoteCredentialHint}</span>
         </p>
       )}
@@ -750,12 +767,12 @@ function DeviceFlowPanel(props: {
             rel="noopener noreferrer"
             className="inline-flex items-center gap-2 rounded-xl bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90"
           >
-            <ExternalLink className="size-4" />
             {t.settings.github.openGithub}
+            <UiIcon name="arrow-up-right" className="size-3" />
           </a>
         </div>
         <p className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Loader2 className="size-3.5 animate-spin" />
+          <UiIcon name="spinner" className="size-3.5 animate-spin" />
           {t.settings.github.ghCli.waiting}
         </p>
       </div>
@@ -772,7 +789,7 @@ function DeviceFlowPanel(props: {
         onClick={onRefresh}
         className="inline-flex items-center gap-2 rounded-xl bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90"
       >
-        <RefreshCw className="size-4" />
+        <UiIcon name="refresh" className="size-4" />
         {t.settings.github.ghCli.recheck}
       </button>
     </div>
@@ -785,7 +802,7 @@ function MethodDisclosure(props: { summary: string; children: React.ReactNode })
     <details className="group w-full">
       <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-lg bg-muted/50 px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
         {props.summary}
-        <ChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
+        <UiIcon name="chevron-down" className="size-3.5 transition-transform group-open:rotate-180" />
       </summary>
       <div className="mt-3">{props.children}</div>
     </details>
@@ -831,7 +848,7 @@ function MethodChooser(props: {
 
   const row = (
     key: string,
-    Icon: typeof Github,
+    Icon: IconName,
     label: string,
     desc: string,
     onClick: () => void,
@@ -842,7 +859,7 @@ function MethodChooser(props: {
       disabled={connecting}
       className="flex w-full items-start gap-3 rounded-xl bg-muted/30 px-3.5 py-2.5 text-start transition-colors hover:bg-muted/60 disabled:opacity-50"
     >
-      <Icon className="size-4 mt-0.5 shrink-0 text-muted-foreground" />
+      <UiIcon name={Icon} className="size-4 mt-0.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0">
         <span className="block text-sm font-medium text-foreground">{label}</span>
         <span className="block text-xs text-muted-foreground leading-relaxed">{desc}</span>
@@ -855,7 +872,7 @@ function MethodChooser(props: {
   const needsCloudFirst = appRequiresCloud && !cloudConnected;
   const appRow = row(
     "app",
-    Github,
+    "github",
     t.settings.github.methodApp,
     needsCloudFirst ? t.settings.github.requiresCloud : t.settings.github.methodAppDesc,
     needsCloudFirst ? onConnectCloud : onConnectApp,
@@ -869,7 +886,7 @@ function MethodChooser(props: {
       ? [
           row(
             "ssh",
-            KeyRound,
+            "key",
             t.settings.github.useSshPerServer,
             t.settings.github.methodSshDesc,
             onSsh,
@@ -877,7 +894,7 @@ function MethodChooser(props: {
         ]
       : []),
     ...(can("token")
-      ? [row("pat", Key, t.settings.github.usePat, t.settings.github.methodTokenDesc, onToken)]
+      ? [row("pat", "key", t.settings.github.usePat, t.settings.github.methodTokenDesc, onToken)]
       : []),
   ];
 
@@ -886,7 +903,7 @@ function MethodChooser(props: {
       <div className="space-y-2">
         {showSignIn &&
           can("device") &&
-          row("signin", Github, t.settings.github.signIn, t.settings.github.signInDesc, onSignIn)}
+          row("signin", "github", t.settings.github.signIn, t.settings.github.signInDesc, onSignIn)}
         {others}
       </div>
     );
@@ -900,7 +917,7 @@ function MethodChooser(props: {
           disabled={connecting}
           className="inline-flex items-center gap-2 rounded-xl bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50"
         >
-          {connecting ? <Loader2 className="size-4 animate-spin" /> : <Github className="size-4" />}
+          {connecting ? <UiIcon name="spinner" className="size-4 animate-spin" /> : <UiIcon name="github" className="size-4" />}
           {t.settings.github.signIn}
         </button>
         <p className="text-xs text-muted-foreground leading-relaxed">
@@ -915,18 +932,16 @@ function MethodChooser(props: {
 }
 
 /**
- * Paste-a-token connect. Shown when the instance has no device client id, which
- * is the case the old UI answered with "run `gh auth login` on the server" — an
- * instruction the operator often cannot follow (the api container has no `gh` and
- * cannot see the host's ~/.config/gh) and shouldn't have to.
+ * Shared token editor for first connection, explicit method selection, and
+ * replacement of a saved credential. Device-flow fallback uses it too.
  *
  * The server validates scope before storing, so an under-scoped token fails HERE,
  * on the field just typed into, rather than as a confusing clone failure inside a
  * deploy later. `gh auth login` survives as a secondary hint for bare installs
  * that do have the binary — reading its hosts.yml still works.
  */
-function TokenForm(props: { message: string; hint?: string; onSaved: () => void }) {
-  const { message, hint, onSaved } = props;
+function TokenForm(props: { message: string; hint?: string; onSaved: () => void; onCancel?: () => void }) {
+  const { message, hint, onSaved, onCancel } = props;
   const { t } = useI18n();
   const { connectWithToken } = useGitHub();
   const [token, setToken] = useState("");
@@ -957,6 +972,7 @@ function TokenForm(props: { message: string; hint?: string; onSaved: () => void 
       <div className="flex flex-wrap items-center gap-2">
         <input
           type="password"
+          aria-label={t.settings.github.methodToken}
           value={token}
           onChange={(e) => setToken(e.target.value)}
           onKeyDown={(e) => {
@@ -972,21 +988,20 @@ function TokenForm(props: { message: string; hint?: string; onSaved: () => void 
           disabled={!token.trim() || saving}
           className="inline-flex items-center gap-2 rounded-xl bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50"
         >
-          {saving && <Loader2 className="size-4 animate-spin" />}
+          {saving && <UiIcon name="spinner" className="size-4 animate-spin" />}
           {t.settings.github.tokenConnect}
         </button>
+        {onCancel && <button type="button" onClick={onCancel} disabled={saving}
+          className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-50">
+          {t.settings.common.cancel}
+        </button>}
       </div>
       {error && <p className="text-xs text-danger leading-relaxed">{error}</p>}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-        <a
-          href="https://github.com/settings/tokens/new?scopes=repo,read:org&description=Openship"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 font-medium text-foreground underline underline-offset-2 hover:text-primary"
-        >
-          {t.settings.github.tokenCreate}
-          <ExternalLink className="size-3" />
-        </a>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground/70">
+        <CreateGitHubTokenLink
+          label={t.settings.github.tokenCreate}
+          className="text-foreground hover:text-primary"
+        />
         {hint && (
           <span>
             {t.settings.github.tokenGhHint}{" "}

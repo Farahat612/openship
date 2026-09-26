@@ -1,12 +1,10 @@
 "use client";
 
+import { Icon as UiIcon } from "@repo/ui/icons";
+
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  Clock, Loader2, Play, Pencil, Check, X,
-  Plus, Trash2, ScrollText, DatabaseBackup, ArrowRight, Search,
-} from "lucide-react";
 import { jobsApi, getApiErrorMessage, type JobView, type BackupScheduleView } from "@/lib/api";
 import { PageContainer } from "@/components/ui/PageContainer";
 import { JobRunLogsModal } from "@/components/jobs/JobRunLogs";
@@ -184,7 +182,7 @@ export default function JobsPage() {
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <Clock className="size-4 text-muted-foreground" />
+              <UiIcon name="clock" className="size-4 text-muted-foreground/70" />
               <Link href={`/jobs/${encodeURIComponent(job.key)}`} className="text-[14px] font-medium text-foreground hover:text-primary">
                 {job.label}
               </Link>
@@ -200,7 +198,7 @@ export default function JobsPage() {
                 onClick={() => job.lastRun && setLogRunId(job.lastRun.id)}
                 className="inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-foreground/[0.06] px-2.5 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.1]"
               >
-                <ScrollText className="size-3.5" /> {j.actions.viewLogs}
+                <UiIcon name="file-text" className="size-3.5" /> {j.actions.viewLogs}
               </button>
             )}
             <button
@@ -208,7 +206,7 @@ export default function JobsPage() {
               disabled={busy}
               className="inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-foreground/[0.06] px-2.5 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] disabled:opacity-50"
             >
-              {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+              {busy ? <UiIcon name="spinner" className="size-3.5 animate-spin" /> : <UiIcon name="play" className="size-3.5" />}
               {busy ? j.actions.running : j.actions.run}
             </button>
             <button
@@ -226,7 +224,7 @@ export default function JobsPage() {
                 title={j.delete.action}
                 className="inline-flex min-h-8 items-center rounded-lg px-2 text-muted-foreground transition-colors hover:bg-danger-bg hover:text-danger disabled:opacity-50"
               >
-                <Trash2 className="size-3.5" />
+                <UiIcon name="trash" className="size-3.5" />
               </button>
             )}
           </div>
@@ -234,25 +232,25 @@ export default function JobsPage() {
 
         <div className="mt-3 grid grid-cols-1 gap-x-8 gap-y-2 border-t border-border/40 pt-3 sm:grid-cols-2">
           <div className="flex items-center gap-2">
-            <span className="text-[12px] text-muted-foreground w-20 shrink-0">{j.fields.schedule}</span>
+            <span className="text-[12px] text-muted-foreground/70 w-20 shrink-0">{j.fields.schedule}</span>
             {editing ? (
               <div className="flex items-center gap-1.5">
                 <input value={cronDraft} onChange={(e) => setCronDraft(e.target.value)} spellCheck={false}
                   className="w-40 rounded-md border border-border/60 bg-background px-2 py-1 font-mono text-[12px] text-foreground outline-none focus:border-primary" />
-                <button onClick={() => void handleSaveCron(job)} disabled={busy} className="text-success disabled:opacity-50"><Check className="size-4" /></button>
-                <button onClick={() => setEditingKey(null)} disabled={busy} className="text-muted-foreground hover:text-foreground disabled:opacity-50"><X className="size-4" /></button>
+                <button onClick={() => void handleSaveCron(job)} disabled={busy} className="text-success disabled:opacity-50"><UiIcon name="check" className="size-4" /></button>
+                <button onClick={() => setEditingKey(null)} disabled={busy} className="text-muted-foreground hover:text-foreground disabled:opacity-50"><UiIcon name="close" className="size-4" /></button>
               </div>
             ) : (
               <div className="flex items-center gap-2">
                 <code className="font-mono text-[12px] text-foreground">{scheduleText}</code>
                 {job.scheduleType === "recurring" && (
-                  <button onClick={() => { setEditingKey(job.key); setCronDraft(job.cronExpression ?? ""); }} title={j.actions.edit} className="text-muted-foreground/60 hover:text-foreground"><Pencil className="size-3.5" /></button>
+                  <button onClick={() => { setEditingKey(job.key); setCronDraft(job.cronExpression ?? ""); }} title={j.actions.edit} className="text-muted-foreground/60 hover:text-foreground"><UiIcon name="edit" className="size-3.5" /></button>
                 )}
               </div>
             )}
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[12px] text-muted-foreground w-20 shrink-0">{j.fields.nextRun}</span>
+            <span className="text-[12px] text-muted-foreground/70 w-20 shrink-0">{j.fields.nextRun}</span>
             <span className="text-[12px] text-foreground">{job.enabled ? formatTime(job.nextRunAt) : j.fields.notScheduled}</span>
           </div>
         </div>
@@ -269,25 +267,25 @@ export default function JobsPage() {
       <div className="mb-6 flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-medium text-foreground/80" style={{ letterSpacing: "-0.2px" }}>{j.title}</h1>
-          <p className="text-sm text-muted-foreground mt-1">{j.subtitle}</p>
+          <p className="text-sm text-muted-foreground/70 mt-1">{j.subtitle}</p>
         </div>
         {selfHosted && (
           <button onClick={() => router.push("/jobs/new")}
             className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2.5 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90">
-            <Plus className="size-4" /> {j.newJob}
+            <UiIcon name="plus" className="size-4" /> {j.newJob}
           </button>
         )}
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center py-20"><Loader2 className="size-5 animate-spin text-muted-foreground" /></div>
+        <div className="flex items-center justify-center py-20"><UiIcon name="spinner" className="size-5 animate-spin text-muted-foreground" /></div>
       ) : (
         <>
           {/* Search sits above the columns so the overview card starts level
               with the list, not the search box (matches the projects page). */}
           {showOverview && (
             <div className="relative mb-4 max-w-md">
-              <Search className="pointer-events-none absolute start-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+              <UiIcon name="search" className="pointer-events-none absolute start-3.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
               <input
                 type="text"
                 value={query}
@@ -303,19 +301,19 @@ export default function JobsPage() {
             <div className="min-w-0 space-y-8">
               {showCustomEmpty ? (
                 <section className="space-y-3">
-                  <h2 className="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">{j.sections.custom}</h2>
+                  <h2 className="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground/70">{j.sections.custom}</h2>
                   <JobsEmptyState onCreate={() => router.push("/jobs/new")} />
                 </section>
               ) : filteredCustom.length > 0 ? (
                 <section className="space-y-3">
-                  <h2 className="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">{j.sections.custom}</h2>
+                  <h2 className="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground/70">{j.sections.custom}</h2>
                   <div className="space-y-3">{filteredCustom.map(renderCard)}</div>
                 </section>
               ) : null}
 
               {filteredSystem.length > 0 && (
                 <section className="space-y-3">
-                  <h2 className="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">{j.sections.system}</h2>
+                  <h2 className="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground/70">{j.sections.system}</h2>
                   <div className="space-y-3">{filteredSystem.map(renderCard)}</div>
                 </section>
               )}
@@ -323,7 +321,7 @@ export default function JobsPage() {
               {filteredBackups.length > 0 && (
                 <section className="space-y-3">
                   <div>
-                    <h2 className="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">{j.backups.section}</h2>
+                    <h2 className="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground/70">{j.backups.section}</h2>
                     <p className="mt-1 text-[12px] text-muted-foreground/60">{j.backups.sectionDesc}</p>
                   </div>
                   <div className="space-y-3">
@@ -379,7 +377,7 @@ function JobsOverview({
     <div className="rounded-2xl border border-border/50 bg-card">
       <div className="flex items-center gap-3 border-b border-border/50 px-5 py-4">
         <div className="flex size-9 items-center justify-center rounded-xl bg-muted">
-          <ScrollText className="size-[18px] text-muted-foreground" />
+          <UiIcon name="file-text" className="size-[18px] text-muted-foreground" />
         </div>
         <div>
           <h2 className="text-[15px] font-semibold text-foreground">{o.title}</h2>
@@ -419,13 +417,13 @@ function StatusPill({ job }: { job: JobView }) {
   const { t } = useI18n();
   const j = t.jobs;
   const run = job.lastRun;
-  if (!run) return <span className="text-[12px] text-muted-foreground">{j.fields.never}</span>;
+  if (!run) return <span className="text-[12px] text-muted-foreground/70">{j.fields.never}</span>;
   const tone = statusTone(run.status);
   const Icon = statusIcon(run.status);
   const label = run.status === "success" ? j.status.success : run.status === "failed" ? j.status.failed : j.status.running;
   return (
     <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${tone}`}>
-      <Icon className={`size-3.5 ${run.status === "running" ? "animate-spin" : ""}`} />
+      <UiIcon name={Icon} className={`size-3.5 ${run.status === "running" ? "animate-spin" : ""}`} />
       {label}
       <span className="text-muted-foreground/60 font-normal">
         · {formatTime(run.startedAt)}{run.durationMs != null ? ` (${formatDuration(run.durationMs)})` : ""}
@@ -479,7 +477,7 @@ function BackupScheduleCard({ s }: { s: BackupScheduleView }) {
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <DatabaseBackup className="size-4 shrink-0 text-muted-foreground" />
+            <UiIcon name="database-backup" className="size-4 shrink-0 text-muted-foreground/70" />
             <span className="truncate text-[14px] font-medium text-foreground">{title}</span>
             <span className="rounded-md bg-info-bg px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-info">{j.backups.badge}</span>
             {!isMail && !s.serviceName && (
@@ -490,12 +488,12 @@ function BackupScheduleCard({ s }: { s: BackupScheduleView }) {
           <div className="mt-1.5">
             {run && Icon ? (
               <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${statusTone(norm!)}`}>
-                <Icon className={`size-3.5 ${norm === "running" ? "animate-spin" : ""}`} />
+                <UiIcon name={Icon} className={`size-3.5 ${norm === "running" ? "animate-spin" : ""}`} />
                 {runLabel}
                 <span className="font-normal text-muted-foreground/60">· {formatTime(run.startedAt)}</span>
               </span>
             ) : (
-              <span className="text-[12px] text-muted-foreground">{j.backups.never}</span>
+              <span className="text-[12px] text-muted-foreground/70">{j.backups.never}</span>
             )}
           </div>
         </div>
@@ -504,18 +502,18 @@ function BackupScheduleCard({ s }: { s: BackupScheduleView }) {
             href={manageHref}
             className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-lg bg-foreground/[0.06] px-2.5 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.1]"
           >
-            {j.backups.manage} <ArrowRight className="size-3.5 rtl:rotate-180" />
+            {j.backups.manage} <UiIcon name="arrow-right" className="size-3.5 rtl:rotate-180" />
           </Link>
         )}
       </div>
 
       <div className="mt-3 grid grid-cols-1 gap-x-8 gap-y-2 border-t border-border/40 pt-3 sm:grid-cols-2">
         <div className="flex items-center gap-2">
-          <span className="w-20 shrink-0 text-[12px] text-muted-foreground">{j.fields.schedule}</span>
+          <span className="w-20 shrink-0 text-[12px] text-muted-foreground/70">{j.fields.schedule}</span>
           <code className="font-mono text-[12px] text-foreground">{s.cronExpression}</code>
         </div>
         <div className="flex items-center gap-2">
-          <span className="w-20 shrink-0 text-[12px] text-muted-foreground">{j.fields.nextRun}</span>
+          <span className="w-20 shrink-0 text-[12px] text-muted-foreground/70">{j.fields.nextRun}</span>
           <span className="text-[12px] text-foreground">{s.enabled ? formatTime(s.nextRunAt) : j.fields.notScheduled}</span>
         </div>
       </div>

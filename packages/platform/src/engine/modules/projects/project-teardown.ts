@@ -824,10 +824,14 @@ async function stepRuntimeCleanup(
     return { orphans, forceOrphanEligible: false };
   }
 
+  const needsProjectCleanup =
+    manifest.projectCleanup &&
+    manifest.runtimes?.some((runtime) => !!runtime.cleanupProject);
   if (
     manifest.resources.length === 0 &&
     (manifest.routeContexts?.length ?? 0) === 0 &&
-    (manifest.unreachableRouteTargets?.length ?? 0) === 0
+    (manifest.unreachableRouteTargets?.length ?? 0) === 0 &&
+    !needsProjectCleanup
   ) {
     push({ step: "runtime_cleanup", status: "skipped", details: "no resources" });
     return { orphans, forceOrphanEligible: false };
@@ -893,7 +897,11 @@ async function stepRuntimeCleanup(
     ? `; ${unreachable.length} orphaned (server unreachable)`
     : "";
 
-  if (destroyable.length === 0 && (manifest.routeContexts?.length ?? 0) === 0) {
+  if (
+    destroyable.length === 0 &&
+    (manifest.routeContexts?.length ?? 0) === 0 &&
+    !needsProjectCleanup
+  ) {
     // Nothing reachable to destroy — only unreachable orphans. The delete
     // proceeds (row drops); GC reclaims the orphans later.
     const hasDeferredCleanup = orphans.length > 0;
@@ -1008,19 +1016,12 @@ async function stepRuntimeCleanup(
     return { orphans, forceOrphanEligible: false };
   }
 
-  // `organizationId` must be carried through: this call REBUILDS the manifest
-  // object from a filtered resource list, and dropping the field silently skipped
-  // the Cloud edge-route release for every torn-down project — leaving the free
-  // `*.opsh.io` URL resolving and its globally-unique slug reserved against an org
-  // that no longer has the project.
+  // Filter resources without dropping project-wide cleanup or target ownership.
+  // In particular, cluster namespaces still need cleanup after their workloads
+  // are gone; omitting projectCleanup silently leaves the namespace behind.
   const result = await executeCleanup({
-    projectId: manifest.projectId,
-    organizationId: manifest.organizationId,
+    ...manifest,
     resources: destroyable,
-    runtimes: manifest.runtimes,
-    routeContexts: manifest.routeContexts,
-    cloudRouteContexts: manifest.cloudRouteContexts,
-    unreachableRouteTargets: manifest.unreachableRouteTargets,
   });
   const realFailures = result.failed;
   const details =

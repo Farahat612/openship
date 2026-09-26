@@ -1,24 +1,13 @@
 "use client";
 
+import { Icon as UiIcon } from "@repo/ui/icons";
+
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
-import {
-  LogOut,
-  Loader2,
-  Moon,
-  Sun,
-  SunMoon,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Plus,
-  Building2,
-  ChevronsUpDown,
-  Check,
-  X,
-} from "lucide-react";
 import { authClient, signOut } from "@/lib/auth-client";
 import { useTheme } from "@/components/theme-provider";
+import { ThemeIcon } from "@/components/theme-icon";
 import { useBrandName, useI18n, interpolate } from "@/components/i18n-provider";
 import { Logo } from "@/components/logo";
 import { useAuth } from "@/context/AuthContext";
@@ -30,6 +19,7 @@ import { useMailScope } from "@/context/MailScopeContext";
 import { setActiveOrganizationId } from "@/lib/api/client";
 import { projectsApi } from "@/lib/api";
 import { useSidebarCollapse } from "@/hooks/useSidebarCollapse";
+import { useIssueCounts } from "@/hooks/useIssueCounts";
 import { getSidebarNavCountsRevision, subscribeSidebarNavCounts } from "@/lib/sidebar-nav-counts";
 import {
   getMailNavSections,
@@ -117,21 +107,16 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { resolvedTheme, toggle } = useTheme();
+  const { toggle } = useTheme();
   const { t } = useI18n();
   const brand = useBrandName();
   const { collapsed: desktopCollapsed, toggleCollapsed } = useSidebarCollapse(
-    pathname === "/scale" || pathname.startsWith("/scale/") || /^\/projects\/[^/]+\/topology(?:\/|$)/.test(pathname),
+    pathname === "/scale" || pathname.startsWith("/scale/"),
   );
   const collapsed = !mobileOpen && desktopCollapsed;
   const [loggingOut, setLoggingOut] = useState(false);
   const [navCounts, setNavCounts] = useState<number | null>(null);
   const [navCountsRevision, setNavCountsRevision] = useState(getSidebarNavCountsRevision);
-  const countFor = (key: string): number | null => {
-    if (navCounts === null) return null;
-    if (key === "projects") return navCounts;
-    return null;
-  };
 
   useEffect(
     () =>
@@ -152,6 +137,15 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
   const [orgRoles, setOrgRoles] = useState<Record<string, string>>({});
   const [orgsLoaded, setOrgsLoaded] = useState(false);
   const [switchingOrgId, setSwitchingOrgId] = useState<string | null>(null);
+  const hasMonitoring = navSections.some(({ items }) => items.some(({ key }) => key === "issues"));
+  const issueCounts = useIssueCounts(orgsLoaded && hasMonitoring ? activeOrgId : undefined);
+  const countFor = (key: string): number | null => {
+    // Match Home's Needs attention card; available updates are advisories.
+    if (key === "issues")
+      return issueCounts ? issueCounts.outage + issueCounts.actionRequired : null;
+    if (key === "projects") return navCounts;
+    return null;
+  };
 
   // Fetch on mount so the trigger shows the current org name without
   // waiting for the user to click. Cheap (one /list call) and mirrors
@@ -325,13 +319,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
             title={t.auth.toggleTheme}
           >
             {/* Icon shows the CURRENT theme; clicking cycles light → dim → dark. */}
-            {resolvedTheme === "light" ? (
-              <Sun className="size-4" />
-            ) : resolvedTheme === "dim" ? (
-              <SunMoon className="size-4" />
-            ) : (
-              <Moon className="size-4" />
-            )}
+            <ThemeIcon className="size-4" />
           </button>
           <button
             type="button"
@@ -342,10 +330,10 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
             title={collapsed ? t.dashboard.sidebar.expand : t.dashboard.sidebar.collapse}
             className="flex size-8 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
           >
-            {mobileOpen ? <X className="size-4" /> : collapsed ? (
-              <PanelLeftOpen className="size-4 rtl:rotate-180" />
+            {mobileOpen ? <UiIcon name="close" className="size-4" /> : collapsed ? (
+              <UiIcon name="sidebar-open" className="size-4 rtl:rotate-180" />
             ) : (
-              <PanelLeftClose className="size-4 rtl:rotate-180" />
+              <UiIcon name="sidebar-close" className="size-4 rtl:rotate-180" />
             )}
           </button>
         </div>
@@ -359,7 +347,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
           {navSections.map(({ section, items }, si) => (
             <div key={section ?? si} className={si > 0 ? "mt-5" : undefined}>
               {!collapsed && section && (
-                <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/60">
                   {sectionLabel(section)}
                 </p>
               )}
@@ -372,28 +360,30 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
                   const { key, href, icon: Icon, labelSource } = item;
                   const active = isNavItemActive(item, pathname, currentTab);
                   const count = countFor(key);
+                  const issueLabel =
+                    key === "issues" && count != null && count > 0
+                      ? `${label(key, labelSource)}: ${count === 1 ? t.dashboard.home.oneIssue : interpolate(t.dashboard.home.manyIssues, { n: String(count) })}`
+                      : undefined;
                   return (
                     <Link
                       key={key}
                       href={href}
-                      title={collapsed ? label(key, labelSource) : undefined}
-                      className={`flex items-center rounded-xl px-3 py-2.5 text-[15px] font-medium transition-colors ${
+                      title={collapsed ? (issueLabel ?? label(key, labelSource)) : undefined}
+                      aria-label={issueLabel}
+                      aria-current={active ? "page" : undefined}
+                      className={`th-nav-item flex items-center rounded-xl px-3 py-2.5 text-[15px] font-medium transition-colors ${
                         collapsed ? "justify-center" : "gap-3"
-                      } ${
-                        active
-                          ? "bg-foreground/[0.07] text-foreground"
-                          : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground"
                       }`}
                     >
-                      <Icon className="size-[18px] shrink-0" strokeWidth={1.7} />
+                      <UiIcon name={Icon} className="size-5 shrink-0" />
                       {!collapsed && (
                         <span className="flex-1 truncate">{label(key, labelSource)}</span>
                       )}
-                      {/* Subtle right-aligned tally — Projects & Apps only, hidden
-                          at 0 and when collapsed. Muted + tabular so it reads as
-                          metadata, not a notification badge. */}
+                      {/* Hide zero/loading counts; keep issue counts in the collapsed label. */}
                       {!collapsed && count != null && count > 0 && (
-                        <span className="shrink-0 text-[13px] tabular-nums text-muted-foreground/45">
+                        <span
+                          className={`shrink-0 text-[13px] tabular-nums ${key === "issues" ? (issueCounts?.outage ? "text-danger" : "text-warning") : "text-muted-foreground/45"}`}
+                        >
                           {count}
                         </span>
                       )}
@@ -425,11 +415,10 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
           <Link
             href={cta.href}
             title={collapsed ? label(cta.labelKey) : undefined}
-            className={`relative flex items-center justify-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-semibold transition-all overflow-hidden ${"bg-gradient-to-r from-violet-500/90 via-primary/90 to-blue-500/90 text-white shadow-sm shadow-primary/20 hover:shadow-md hover:shadow-primary/30 hover:brightness-110 dark:from-amber-400/90! dark:via-orange-500/90! dark:to-rose-500/90! dark:shadow-orange-500/20 dark:hover:shadow-orange-500/30 dim:from-[hsl(86_84%_74%)]! dim:via-[hsl(82_80%_64%)]! dim:to-[hsl(74_74%_54%)]! dim:text-[#0c1206]! dim:shadow-lime-400/25 dim:hover:shadow-lime-400/40"}`}
+            className="th-btn-accent flex items-center justify-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-semibold transition-all overflow-hidden hover:brightness-110"
           >
-            <span className="absolute inset-0 bg-[radial-gradient(circle_at_30%_50%,rgba(255,255,255,0.15),transparent_70%)]" />
-            <Plus className="relative size-4" strokeWidth={2.5} />
-            {!collapsed && <span className="relative">{label(cta.labelKey)}</span>}
+            <UiIcon name="plus" className="size-4" />
+            {!collapsed && <span>{label(cta.labelKey)}</span>}
           </Link>
         </div>
       )}
@@ -438,7 +427,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
       <div className="px-3 pb-4 pt-1">
         <div className="mx-2 mb-3 h-px bg-border/60" />
         {!collapsed && (
-          <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+          <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/60">
             {t.dashboard.nav.sections.account}
           </p>
         )}
@@ -458,7 +447,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
             >
               {/* Org avatar / initial */}
               <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-foreground/[0.08] text-sm font-semibold uppercase text-foreground">
-                {activeOrg?.name?.[0] ?? <Building2 className="size-4" />}
+                {activeOrg?.name?.[0] ?? <UiIcon name="building" className="size-4" />}
               </div>
 
               {!collapsed && (
@@ -475,7 +464,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
                         : displayEmail}
                     </p>
                   </div>
-                  <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+                  <UiIcon name="chevrons-up-down" className="size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
                 </>
               )}
             </button>
@@ -483,13 +472,13 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
             {/* Popover — shown to the side when collapsed, above when expanded */}
             {orgsOpen && (
               <div
-                className={`absolute z-50 overflow-hidden rounded-2xl border border-border/50 bg-popover shadow-xl shadow-black/[0.08] ${
+                className={`absolute z-50 overflow-hidden rounded-2xl border border-border/50 bg-popover shadow-[var(--th-dropdown-shadow)] ${
                   collapsed ? "start-full bottom-0 ms-2 w-72" : "start-0 end-0 bottom-full mb-2"
                 }`}
               >
                 {/* Heading */}
                 <div className="px-3 pt-3 pb-2">
-                  <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/70">
                     {t.chrome.sidebar.switchOrganization}
                   </p>
                 </div>
@@ -510,7 +499,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
                         }`}
                       >
                         <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-foreground/[0.08] text-[12px] font-semibold uppercase text-foreground">
-                          {o.name?.[0] ?? <Building2 className="size-3.5" />}
+                          {o.name?.[0] ?? <UiIcon name="building" className="size-3.5" />}
                         </div>
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-[13px] font-medium leading-tight text-foreground">
@@ -535,10 +524,10 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
                           </p>
                         </div>
                         {isCurrent && !isSwitching && (
-                          <Check className="size-4 shrink-0 text-primary" />
+                          <UiIcon name="check" className="size-4 shrink-0 text-primary" />
                         )}
                         {isSwitching && (
-                          <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
+                          <UiIcon name="spinner" className="size-4 shrink-0 animate-spin text-muted-foreground" />
                         )}
                       </button>
                     );
@@ -560,7 +549,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
                       </p>
                       {cloudBadge?.email && (
                         <p
-                          className="truncate text-[10px] leading-tight text-muted-foreground"
+                          className="truncate text-[10px] leading-tight text-muted-foreground/70"
                           title={interpolate(t.chrome.sidebar.linkedToCloud, {
                             email: cloudBadge.email,
                           })}
@@ -577,9 +566,9 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
                     className="mt-1 flex w-full items-center gap-2 rounded-xl px-2 py-2 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground disabled:opacity-50"
                   >
                     {loggingOut ? (
-                      <Loader2 className="size-4 animate-spin" />
+                      <UiIcon name="spinner" className="size-4 animate-spin" />
                     ) : (
-                      <LogOut className="size-4" />
+                      <UiIcon name="logout" className="size-4" />
                     )}
                     {isDesktop ? t.chrome.sidebar.backToSetup : t.dashboard.user.logout}
                   </button>
@@ -612,7 +601,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
                     </p>
                     {cloudBadge?.email && (
                       <p
-                        className="truncate text-[11px] leading-tight text-muted-foreground"
+                        className="truncate text-[11px] leading-tight text-muted-foreground/70"
                         title={interpolate(t.chrome.sidebar.linkedToCloud, {
                           email: cloudBadge.email,
                         })}
@@ -629,9 +618,9 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
                     title={isDesktop ? t.chrome.sidebar.backToSetup : t.dashboard.user.logout}
                   >
                     {loggingOut ? (
-                      <Loader2 className="size-4 animate-spin" />
+                      <UiIcon name="spinner" className="size-4 animate-spin" />
                     ) : (
-                      <LogOut className="size-4" />
+                      <UiIcon name="logout" className="size-4" />
                     )}
                   </button>
                 </>
@@ -646,9 +635,9 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
                 title={isDesktop ? t.chrome.sidebar.backToSetup : t.dashboard.user.logout}
               >
                 {loggingOut ? (
-                  <Loader2 className="size-4 animate-spin" />
+                  <UiIcon name="spinner" className="size-4 animate-spin" />
                 ) : (
-                  <LogOut className="size-4" />
+                  <UiIcon name="logout" className="size-4" />
                 )}
               </button>
             )}
@@ -666,9 +655,9 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
             title={isDesktop ? t.chrome.sidebar.backToSetup : t.dashboard.user.logout}
           >
             {loggingOut ? (
-              <Loader2 className="size-4 animate-spin" />
+              <UiIcon name="spinner" className="size-4 animate-spin" />
             ) : (
-              <LogOut className="size-4" />
+              <UiIcon name="logout" className="size-4" />
             )}
           </button>
         )}

@@ -1,4 +1,5 @@
 "use client";
+import type { IconName } from "@repo/ui/icons";
 import React, {
   createContext,
   useContext,
@@ -224,7 +225,7 @@ interface ServicesData {
 interface ProjectTab {
   id: string;
   label: string;
-  icon: string;
+  icon: IconName;
   /** Sections keep their existing routes inside a shared navigation group. */
   sections?: { id: string; label: string }[];
 }
@@ -327,9 +328,8 @@ export const ProjectSettingsProvider: React.FC<ProviderProps> = ({
   initialProjectData,
 }) => {
   const { t } = useI18n();
-  // Mirrors the API's `isServerHost` (= platform target "selfhosted"), which is
-  // exactly the gate on the health-watch job that feeds the Health tab.
-  const { isServerHost } = usePlatform();
+  // Both server and desktop installations can watch local/SSH Docker workloads.
+  const { selfHosted } = usePlatform();
   const [projectData, setProjectData] = useState<BasicProjectData>(
     initialProjectData || {
       id: "",
@@ -955,61 +955,54 @@ export const ProjectSettingsProvider: React.FC<ProviderProps> = ({
   const resolveTab = (tab?: string) => {
     if (tab === "general") return "overview";
     if (tab === "git") return "source";
-    if (tab === "settings" || tab === "build") return "runtime";
+    if (tab === "settings" || tab === "build" || tab === "runtime") return "advanced";
     return tab || undefined; // let default be set by tab list below
   };
 
   const tabs = useMemo<ProjectTab[]>(() => {
     const tl = t.projects.sidebar.tabs;
-    const all = [
-      { id: "overview", label: tl.overview, icon: "setting-100-1658432731.png" },
-      { id: "topology", label: tl.topology, icon: "layers.png" },
-      { id: "services", label: tl.services, icon: "layers.png" },
-      { id: "domains", label: tl.domains, icon: "server-59-1658435258.png" },
-      { id: "deployments", label: tl.deployments, icon: "heart%20rate-118-1658433496.png" },
-      { id: "health", label: tl.health, icon: "heart%20rate-118-1658433496.png" },
+    const healthAvailable = selfHosted && projectData.deployTarget !== "cloud";
+    return [
+      { id: "overview", label: tl.overview, icon: "chart-pie" },
+      { id: "topology", label: tl.topology, icon: "topology" },
+      { id: "services", label: tl.services, icon: "layers" },
+      { id: "domains", label: tl.domains, icon: "globe" },
+      { id: "deployments", label: tl.deployments, icon: "rocket" },
       // Shown on cloud AND self-hosted, deliberately: both halves of the tab work
       // in both modes through adapters that already exist — resource usage via
       // RuntimeAdapter.getUsage (dockerode | Oblien metrics) and visitor geography
       // via the traffic-source resolver (OpenResty mgmt API | Oblien analytics).
-      { id: "monitoring", label: tl.monitoring, icon: "chart-1658432731.png" },
+      {
+        id: "monitoring",
+        label: tl.monitoring,
+        icon: "activity",
+        // Incidents belong beside metrics. The health watch covers local/SSH
+        // workloads; cloud monitoring continues to use its existing adapters.
+        sections: healthAvailable ? [
+          { id: "monitoring", label: tl.monitoring },
+          { id: "health", label: tl.health },
+        ] : undefined,
+      },
       {
         id: "source",
         label: tl.sourceAndTriggers,
-        icon: "git%20branch-159-1658431404.png",
+        icon: "git-branch",
         sections: [
           { id: "source", label: tl.source },
           { id: "webhooks", label: tl.webhooks },
         ],
       },
-      { id: "logs", label: tl.logs, icon: "terminal-184-1658431404.png" },
-      { id: "backup", label: tl.backup, icon: "database.png" },
-      {
-        id: "runtime",
-        label: tl.settings,
-        icon: "setting-40-1662364403.png",
-        sections: [
-          { id: "runtime", label: tl.runtime },
-          { id: "advanced", label: tl.advanced },
-        ],
-      },
+      { id: "logs", label: tl.logs, icon: "file-text" },
+      { id: "backup", label: tl.backup, icon: "database-backup" },
+      { id: "advanced", label: tl.settings, icon: "wrench" },
     ];
-    const isCloud = projectData.deployTarget === "cloud";
-    return all.filter((tab) => {
-      // Configuration also owns shared project environment for service projects.
-      // Health is fed by the self-hosted container health watch, so it needs BOTH
-      // halves to be true: the control plane has to be the always-on self-hosted
-      // one that runs the watch job (not SaaS, not desktop), and the workload has
-      // to be a container we can poll (Oblien exposes no stability probe).
-      if (tab.id === "health" && (!isServerHost || isCloud)) return false;
-      // Source & Triggers is available on cloud too. Webhook job actions and
-      // the self-hosted webhook-domain picker remain gated inside their section.
-      return true;
-    });
-  }, [t, projectData.deployTarget, isServerHost]);
+  }, [t, projectData.deployTarget, selfHosted]);
 
   const defaultTab = tabs[0].id;
-  const [activeTab, setActiveTab] = useState(resolveTab(slug?.[0]) || defaultTab);
+  const [activeTab, setActiveTab] = useState(() => {
+    const resolved = resolveTab(slug?.[0]) || defaultTab;
+    return findTabGroup(tabs, resolved) ? resolved : defaultTab;
+  });
   const activeTabGroup = findTabGroup(tabs, activeTab)?.id || defaultTab;
   const [pendingDomainAction, setPendingDomainAction] = useState<"add" | null>(null);
 

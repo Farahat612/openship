@@ -1,4 +1,5 @@
 import { repos } from "@repo/db";
+import { AppError } from "@repo/core";
 import type { RuntimeAdapter } from "@repo/adapters";
 import {
   resolveDeploymentPlatform,
@@ -42,16 +43,19 @@ export async function containerIdForService(
   );
 }
 
-/** A service is a CONTAINER (Docker, on a server/local target) or an Oblien
- *  WORKSPACE (cloud) — never the app's bare host process. Resolve the platform
+/** A service is a Docker container (including Cloud Compose) or an independent
+ *  native Cloud workspace — never the app's bare host process. Resolve the platform
  *  with the runtime pinned to Docker so service start/stop/logs target the real
- *  service runtime even when the project's app deploys "bare". Cloud stays on
- *  CloudRuntime (runtimeMode is irrelevant there). */
+ *  service runtime even when the project's app deploys "bare". The persisted
+ *  Cloud Docker binding selects the shared workspace; native Cloud keeps its runtime. */
 export async function resolveServicePlatform(
-  project: { organizationId: string },
+  project: { id?: string; organizationId: string },
   dep: { meta: unknown },
 ) {
   const snapshot = { ...(dep.meta as DeploymentConfigSnapshot), runtimeMode: "docker" as const };
+  if (snapshot.cloudDockerWorkspace && project.id && snapshot.cloudDockerWorkspace.projectId !== project.id) {
+    throw new AppError("Cloud Docker workspace does not belong to this project", 404, "CLOUD_WORKSPACE_NOT_FOUND");
+  }
   return resolveDeploymentPlatform(snapshot, { organizationId: project.organizationId });
 }
 
@@ -62,12 +66,13 @@ export async function resolveServicePlatform(
  * already passes around and degrading to null so a read never throws.
  */
 export async function resolveServiceRuntimeForRead(
-  project: { organizationId: string },
+  project: { id?: string; organizationId: string },
   dep: { meta: unknown },
 ): Promise<RuntimeAdapter | null> {
   return resolveDeploymentRuntimeForRead({
     meta: dep.meta,
     organizationId: project.organizationId,
+    projectId: project.id,
   })
     .then((r) => r.runtime)
     .catch(() => null);
@@ -102,8 +107,9 @@ export interface HostContainerLister {
 export async function liveContainerIdWithRuntime(
   runtime: HostContainerLister | null | undefined,
   args: { service: { id: string; name: string }; projectId: string; slug: string; tracked: string | null },
+  opts?: { requireLiveQuery?: boolean },
 ): Promise<string | null> {
-  return (await liveContainerStateWithRuntime(runtime, args)).containerId;
+  return (await liveContainerStateWithRuntime(runtime, args, opts)).containerId;
 }
 
 /**
@@ -126,11 +132,17 @@ export async function liveContainerIdWithRuntime(
 export async function liveContainerStateWithRuntime(
   runtime: HostContainerLister | null | undefined,
   args: { service: { id: string; name: string }; projectId: string; slug: string; tracked: string | null },
+  opts?: { requireLiveQuery?: boolean },
 ): Promise<{ containerId: string | null; running: boolean | null }> {
   if (!runtime?.supports("hostContainerQuery") || !runtime.listAllContainers) {
     return { containerId: args.tracked, running: null };
   }
-  const containers = await runtime.listAllContainers().catch(() => null);
+  const containers = await runtime.listAllContainers().catch(error => {
+    // A mutating caller without a recorded identity must distinguish an empty
+    // host from an unreachable one before deciding to provision a container.
+    if (opts?.requireLiveQuery) throw error;
+    return null;
+  });
   if (!containers) return { containerId: args.tracked, running: null };
   const match = resolveLiveServiceState({
     services: [args.service],

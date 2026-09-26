@@ -27,7 +27,8 @@
  * because the case that matters most is the one where there is no next sweep. One
  * mechanism buys all of:
  *   - no startup hook — the first tick after boot subscribes;
- *   - turning the health-watch job off drains every stream within ~2.5 min, so it
+ *   - turning the health-watch job off drains streams through the job's cleanup
+ *     hook, with expiry as a fallback within ~2.5 min, so it
  *     really is off: an expired subscription still receiving events would keep
  *     calling the sweep out of band, and keep notifying, with the job disabled;
  *   - a box whose last project is deleted, disabled, or moved to cloud loses its
@@ -45,11 +46,10 @@
 import { safeErrorMessage } from "@repo/core";
 import { trackBackgroundWork } from "../../lib/background-work";
 import {
-  getPlatform,
   type ContainerLifecycleEvent,
   type RuntimeAdapter,
 } from "@repo/adapters";
-import { env } from "@repo/platform/engine/config/env";
+import { containerHealthEventsAvailable } from "./health-watch-policy";
 import { resolveDeploymentRuntimeForRead } from "@repo/platform/engine/lib/deployment-runtime";
 import { sshManager } from "@repo/platform/engine/lib/ssh-manager";
 import { isTrackedHealthContainer, parseWatchGroupKey, runHealthWatch } from "@repo/platform/engine/modules/monitoring/health-watch";
@@ -135,10 +135,7 @@ function unref(timer: ReturnType<typeof setTimeout>): ReturnType<typeof setTimeo
 }
 
 function eventsEnabled(): boolean {
-  // Same gate as the health-watch job itself: desktop has no always-on poller and
-  // Oblien exposes no event feed, so "selfhosted" is the only target with anything
-  // to accelerate.
-  return getPlatform().target === "selfhosted" && !env.OPENSHIP_DISABLE_CONTAINER_EVENTS;
+  return containerHealthEventsAvailable();
 }
 
 /**

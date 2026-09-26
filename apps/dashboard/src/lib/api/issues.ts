@@ -1,4 +1,4 @@
-import { api } from "./client";
+import { api, getActiveOrganizationId } from "./client";
 import { endpoints } from "./endpoints";
 
 /**
@@ -28,6 +28,7 @@ export type IssueKind =
   | "workload_crash_loop"
   | "workload_down"
   | "server_unreachable"
+  | "monitoring_offline"
   // Managed components
   | "edge_down"
   | "edge_absent"
@@ -83,6 +84,17 @@ export interface IssueFeed {
   status: "open" | "resolved";
 }
 
+type IssueCountsListener = (counts: IssueCounts, organizationId: string | null) => void;
+const countsListeners = new Set<IssueCountsListener>();
+
+/** Share Home/Monitoring refreshes with the sidebar, including after a fix. */
+export function subscribeOpenIssueCounts(listener: IssueCountsListener): () => void {
+  countsListeners.add(listener);
+  return () => {
+    countsListeners.delete(listener);
+  };
+}
+
 export interface RescanResult {
   ran: string[];
   skipped: string[];
@@ -127,6 +139,8 @@ export interface HealthCheckSummary {
   resolved: number;
   stale: number;
   unreachable: number;
+  /** Missing on APIs predating desktop connectivity detection. */
+  offline?: number;
   unresolved: number;
   skipped: number;
   indeterminate: number;
@@ -138,6 +152,21 @@ export interface HealthCheckSummary {
 export interface CurrentHealthScanResult {
   completedAt: string;
   summary: HealthCheckSummary;
+}
+
+export interface MonitoringHealthSnapshot {
+  data: WorkloadHealthRow[];
+  watching: boolean;
+  capabilities: { current: boolean; continuous: boolean };
+  currentScan: CurrentHealthScanResult | null;
+  watcher: {
+    key: string;
+    schedule: string | null;
+    available: boolean;
+    eventsEnabled: boolean;
+    canManage: boolean;
+    runsWhileAppOpen: boolean;
+  };
 }
 
 /**
@@ -155,18 +184,23 @@ export function runResolution(r: IssueResolution) {
 
 export const issuesApi = {
   /** Open issues (default) or resolved incident history. */
-  list: (status: "open" | "resolved" = "open") =>
-    api.get<IssueFeed>(status === "resolved" ? endpoints.issues.resolved : endpoints.issues.open),
+  list: async (status: "open" | "resolved" = "open") => {
+    const organizationId = getActiveOrganizationId();
+    const feed = await api.get<IssueFeed>(
+      status === "resolved" ? endpoints.issues.resolved : endpoints.issues.open,
+    );
+    if (status === "open" && feed.counts && organizationId === getActiveOrganizationId()) {
+      countsListeners.forEach((listener) => listener(feed.counts, organizationId));
+    }
+    return feed;
+  },
+
+  /** The same open-feed counts, without transferring every issue row. */
+  summary: () => api.get<{ data: IssueCounts }>(endpoints.issues.summary, { dedupe: false }),
 
   /** Cached output of the grouped Docker watcher; does not probe containers. */
   health: () =>
-    api.get<{
-      data: WorkloadHealthRow[];
-      watching: boolean;
-      capabilities: { current: boolean; continuous: boolean };
-      currentScan: CurrentHealthScanResult | null;
-      watcher: { key: string; schedule: string | null; available: boolean; eventsEnabled: boolean };
-    }>(endpoints.issues.health),
+    api.get<MonitoringHealthSnapshot>(endpoints.issues.health, { dedupe: false }),
 
   /** One current-state pass. Shares the watcher scanner but no watcher side effects. */
   scanHealth: () =>
@@ -174,11 +208,7 @@ export const issuesApi = {
       timeout: 300_000,
     }),
 
-  // `GET /issues/summary` (counts without rows) has no client wrapper on purpose: the
-  // page reads its counts off the feed it already fetched, and the nav entry carries no
-  // badge. It stays a server endpoint for MCP clients asking "is anything broken".
-
   /** Run the scheduled checkers behind the feed now. Self-hosted only (404s on cloud). */
-  rescan: () => api.post<{ data: MonitoringScanSession }>(endpoints.issues.rescan),
-  rescanStatus: () => api.get<{ data: MonitoringScanSession | null }>(endpoints.issues.rescanStatus),
+  rescan: (options?: { healthOnly?: boolean }) => api.post<{ data: MonitoringScanSession }>(endpoints.issues.rescan, options),
+  rescanStatus: () => api.get<{ data: MonitoringScanSession | null }>(endpoints.issues.rescanStatus, { dedupe: false }),
 };

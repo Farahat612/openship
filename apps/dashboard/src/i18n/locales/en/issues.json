@@ -2,9 +2,13 @@
   "title": "Monitoring",
   "subtitle": "Health, updates and activity across your projects, servers and domains.",
   "tabs": {
-    "open": "Open",
+    "open": "Overview",
     "health": "Health",
-    "resolved": "Resolved"
+    "resolved": "History"
+  },
+  "monitoringHint": {
+    "description": "See service status and manage background monitoring.",
+    "action": "Manage monitoring"
   },
   "resolvedNote": "History covers container and server incidents — the other checks report current state, so a fixed certificate or deploy simply stops appearing here.",
   "rescan": "Re-scan",
@@ -45,7 +49,8 @@
     "edge_absent": "Edge not installed",
     "mail_down": "Mail engine down",
     "update_available": "Update available",
-    "component_behind": "Component update available"
+    "component_behind": "Component update available",
+    "monitoring_offline": "Desktop offline"
   },
   "since": "Started {when}",
   "resolvedWhen": "Resolved {when}",
@@ -84,10 +89,17 @@
   "toast": {
     "title": "Monitoring",
     "rescanned": "Re-scan finished",
-    "rescanPartial": "Re-scan finished, {n} check(s) failed",
+    "rescanPartial": "Re-scan finished, {n} check(s) have incomplete coverage",
     "rescanFailed": "Re-scan failed",
     "resolved": "Done",
     "resolveFailed": "Couldn't apply that fix",
     "confirmDestructive": "This has a side effect that can't be undone. Continue?"
+  },
+  "connectivity": {
+    "offlineTitle": "This device is offline",
+    "offlineHint": "Monitoring may be out of date. Reconnect to refresh and recheck the servers.",
+    "retryStatus": "Retry status",
+    "recheck": "Recheck",
+    "unknownHealth": "Container health is unknown until Openship can reach this server."
   }
 }

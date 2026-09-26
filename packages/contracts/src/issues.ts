@@ -17,12 +17,12 @@ export const WorkloadHealthSchema = Type.Object({ organizationId: Type.String(),
 export const IssueCollectionSchemas = {
   list: { action: "read", scope: "list", input: Type.Object({ status: Type.Optional(Type.Union([Type.Literal("open"), Type.Literal("resolved")])) }), optionalInput: true, output: Type.Object({ issues: Type.Array(SystemIssueSchema), counts: IssueCountsSchema, status: Type.Union([Type.Literal("open"), Type.Literal("resolved")]) }) },
   summary: { action: "read", scope: "list", output: IssueCountsSchema },
-  health: { action: "read", scope: "list", output: Type.Object({ workloads: Type.Array(WorkloadHealthSchema), watching: Type.Boolean(), capabilities: Type.Object({ current: Type.Boolean(), continuous: Type.Boolean() }), currentScan: Type.Union([currentScan, Type.Null()]), watcher: Type.Object({ key: Type.String(), schedule: nullableString, available: Type.Boolean(), eventsEnabled: Type.Boolean() }) }) },
+  health: { action: "read", scope: "list", output: Type.Object({ workloads: Type.Array(WorkloadHealthSchema), watching: Type.Boolean(), capabilities: Type.Object({ current: Type.Boolean(), continuous: Type.Boolean() }), currentScan: Type.Union([currentScan, Type.Null()]), watcher: Type.Object({ key: Type.String(), schedule: nullableString, available: Type.Boolean(), eventsEnabled: Type.Boolean(), canManage: Type.Boolean(), runsWhileAppOpen: Type.Boolean() }) }) },
   scanHealth: { action: "read", scope: "list", output: currentScan },
 } as const satisfies Record<string, ResourceOperationSchema>;
 export const IssueRescanSchema = Type.Object({ id: Type.String(), status: Type.Union([Type.Literal("running"), Type.Literal("completed")]), startedAt: Type.String(), finishedAt: Type.Optional(Type.String()), stages: Type.Array(Type.Object({ key: Type.String(), status: Type.Union((["pending", "running", "completed", "failed", "skipped"] as const).map(value => Type.Literal(value))), summary: Type.Optional(Type.Record(Type.String(), Type.Unknown())), error: Type.Optional(Type.String()) })) });
 export const IssueJobSchemas = {
-  rescan: { action: "write", output: IssueRescanSchema },
+  rescan: { action: "write", input: Type.Object({ healthOnly: Type.Optional(Type.Boolean()) }), optionalInput: true, output: IssueRescanSchema },
   rescanStatus: { action: "read", output: Type.Union([IssueRescanSchema, Type.Null()]) },
 } as const satisfies Record<string, ResourceOperationSchema>;
 export type SystemIssue = Static<typeof SystemIssueSchema>;

@@ -3,7 +3,7 @@ import type { Project } from "@repo/db";
 
 const h = vi.hoisted(() => ({
   owner: vi.fn(), find: vi.fn(), reserve: vi.fn(), attach: vi.fn(), ready: vi.fn(), active: vi.fn(),
-  token: vi.fn(), spend: vi.fn(), create: vi.fn(), get: vi.fn(), start: vi.fn(), resume: vi.fn(),
+  token: vi.fn(), spend: vi.fn(), create: vi.fn(), retry: vi.fn(), get: vi.fn(), start: vi.fn(), resume: vi.fn(),
   permanent: vi.fn(), resize: vi.fn(), wait: vi.fn(), credentials: [] as unknown[],
   discard: vi.fn(), list: vi.fn(), exec: vi.fn(), invalidate: vi.fn(), dispose: vi.fn(),
 }));
@@ -20,7 +20,7 @@ vi.mock("@repo/adapters", async (original) => ({
   ...await original<typeof import("@repo/adapters")>(),
   Oblien: class {
     constructor(credentials: unknown) { h.credentials.push(credentials); }
-    workspaces = { create: h.create, get: h.get, list: h.list };
+    workspaces = { create: h.create, retryCreation: h.retry, get: h.get, list: h.list };
     workspace = () => ({ get: h.get, start: h.start, resume: h.resume,
       lifecycle: { makePermanent: h.permanent }, resources: { update: h.resize },
       runtime: async () => ({ exec: { run: h.exec } }), invalidateRuntime: h.invalidate });
@@ -48,6 +48,7 @@ beforeEach(() => {
   h.attach.mockImplementation(async (_p, _o, _n, id) => { binding!.workspaceId = id; });
   h.ready.mockImplementation(async () => { binding!.state = "ready"; });
   h.create.mockResolvedValue({ id: "workspace-a", namespace: "namespace-a", status: "creating" });
+  h.retry.mockResolvedValue({ id: "workspace-a", namespace: "namespace-a", status: "creating" });
   h.get.mockResolvedValue({ id: "workspace-a", namespace: "namespace-a", status: "active", info: { status: "running" }, resources: { cpus: 2, memory_mb: 4096, disk_size_mb: 32768 } });
   h.wait.mockImplementation(async () => h.get());
   h.exec.mockResolvedValue("");
@@ -87,6 +88,32 @@ describe("Cloud Docker provisioning and retry", () => {
     expect(binding?.state).toBe("provisioning");
     await ensureCloudDockerWorkspace(input);
     expect(h.create).toHaveBeenCalledOnce();
+  });
+  it("retries failed initial provisioning on the same workspace when the deployment is retried", async () => {
+    h.wait.mockRejectedValueOnce(new Error("provider boot failed"));
+    await expect(ensureCloudDockerWorkspace(input)).rejects.toThrow("provider boot failed");
+    h.get.mockResolvedValueOnce({ id: "workspace-a", namespace: "namespace-a", status: "error", provisioning: { state: "failed" } });
+    await expect(ensureCloudDockerWorkspace(input)).resolves.toEqual({ projectId: "project-a", workspaceId: "workspace-a" });
+    expect(h.retry).toHaveBeenCalledExactlyOnceWith("workspace-a");
+    expect(h.create).toHaveBeenCalledOnce();
+    expect(binding?.state).toBe("ready");
+  });
+  it("does not retry creation for a previously ready workspace with customer data", async () => {
+    await ensureCloudDockerWorkspace(input);
+    h.get.mockResolvedValue({ id: "workspace-a", namespace: "namespace-a", status: "error", provisioning: { state: "failed" } });
+    h.wait.mockRejectedValue(new Error("provider boot failed"));
+    await expect(ensureCloudDockerWorkspace(input)).rejects.toThrow("provider boot failed");
+    expect(h.retry).not.toHaveBeenCalled();
+    expect(h.create).toHaveBeenCalledOnce();
+  });
+  it("verifies the workspace returned from a provisioning retry", async () => {
+    h.wait.mockRejectedValueOnce(new Error("provider boot failed"));
+    await expect(ensureCloudDockerWorkspace(input)).rejects.toThrow("provider boot failed");
+    h.get.mockResolvedValueOnce({ id: "workspace-a", namespace: "namespace-a", status: "error", provisioning: { state: "failed" } });
+    h.retry.mockResolvedValue({ id: "workspace-other", namespace: "namespace-other" });
+    await expect(ensureCloudDockerWorkspace(input)).rejects.toThrow("unexpected workspace");
+    expect(binding?.workspaceId).toBe("workspace-a");
+    expect(binding?.state).toBe("provisioning");
   });
   it("discards an empty reservation only after a definitive provider rejection", async () => {
     h.create.mockRejectedValueOnce(Object.assign(new Error("resource allowance exceeded"), { status: 403 }));
@@ -159,6 +186,32 @@ describe("Cloud Docker provisioning and retry", () => {
     binding = { ...input, namespace: "namespace-a", workspaceId: "workspace-missing", resources, provisionKey: "stable-key" };
     h.get.mockRejectedValue(Object.assign(new Error("workspace missing"), { status: 404 }));
     await expect(ensureCloudDockerWorkspace(input)).rejects.toThrow("workspace missing");
+    expect(h.create).not.toHaveBeenCalled();
+  });
+  it("grows the recorded workspace for a service add without reserving or creating another host", async () => {
+    await ensureCloudDockerWorkspace(input);
+    h.reserve.mockClear(); h.create.mockClear();
+    await ensureCloudDockerWorkspace({ ...input, existingWorkspaceId: "workspace-a",
+      resources: { ...resources, cpuCores: 3, memoryMb: 6144 } });
+    expect(h.resize).toHaveBeenCalledWith({ cpus: 3, memory_mb: 6144, disk_size_mb: 32768, apply: true });
+    expect(h.reserve).not.toHaveBeenCalled();
+    expect(h.create).not.toHaveBeenCalled();
+    expect(binding?.workspaceId).toBe("workspace-a");
+  });
+  it.each(["missing", "different"])("refuses a service add with a %s workspace binding before provider access", async state => {
+    if (state === "different") binding = { namespace: "namespace-a", workspaceId: "another-workspace", resources };
+    await expect(ensureCloudDockerWorkspace({ ...input, existingWorkspaceId: "workspace-a" }))
+      .rejects.toMatchObject({ code: "CLOUD_WORKSPACE_NOT_FOUND" });
+    expect(h.token).not.toHaveBeenCalled();
+    expect(h.reserve).not.toHaveBeenCalled();
+    expect(h.create).not.toHaveBeenCalled();
+    expect(h.resize).not.toHaveBeenCalled();
+  });
+  it("refuses a service add when namespace ownership no longer matches", async () => {
+    binding = { namespace: "another-namespace", workspaceId: "workspace-a", resources };
+    await expect(ensureCloudDockerWorkspace({ ...input, existingWorkspaceId: "workspace-a" }))
+      .rejects.toThrow("namespace binding");
+    expect(h.get).not.toHaveBeenCalled();
     expect(h.create).not.toHaveBeenCalled();
   });
   it("rejects wrong namespace ownership and blocks new spending before provisioning", async () => {

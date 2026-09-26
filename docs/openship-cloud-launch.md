@@ -1,10 +1,15 @@
 # Openship Cloud release gate
 
-Cloud uses Oblien Mode B. Oblien owns hosted checkout, payment collection,
+Paid Cloud subscriptions use Oblien Mode B. Oblien owns hosted checkout, payment collection,
 subscription renewals, credit grants, usage enforcement, and workspace lifecycle.
 Openship owns its prices, product copy, namespace allowances and application limits,
 customer identity, project/build orchestration, and the dashboard. It calls the provider APIs for infrastructure;
 it does not operate a hypervisor or maintain an independent payment ledger.
+
+Operators can also issue [complimentary Cloud plans](complimentary-cloud-plans.md).
+These have a separate, audited grant and a zero customer price. Their finite
+monthly allowances use Oblien Mode A; ordinary paid subscriptions keep the
+provider-managed checkout and renewal flow.
 
 The Docker deployment path passed 31 live staging checks on 2026-09-17, including
 rollback, volume restore, cold restart, HTTPS and resource cleanup. After Oblien's
@@ -339,6 +344,82 @@ also has an expiry. It does not change account defaults or existing customers.
 Sources: [live image API](https://oblien.com/docs/api/images),
 [workspace creation](https://oblien.com/docs/api/workspaces), and the authenticated
 `GET /workspace/images?search=docker` catalog response.
+
+## Compose service additions, 2026-09-24
+
+Adding an image service to a deployed Cloud Compose project uses that project's
+recorded Docker workspace. Adding a service to a native single-application
+project keeps the native service-workspace layout. Existing native projects are
+not migrated by adding a service. Compose volume mounts require the Docker
+layout; a native workspace's persistent root disk is not a Compose volume.
+
+The direct Start path now verifies the recorded workspace binding and prepares
+its allocation before creating the new container. Sizing includes sibling
+container allocations, including disabled definitions with retained containers,
+and does not substitute unapplied sibling CPU or memory edits for recorded
+limits. Service quotas remain per service, regardless of the shared VM count.
+Start refuses to grow a Compose workspace while a deployment is in flight.
+Workspace growth can restart running siblings; ordinary service Start does not
+rebuild the project or create a deployment session.
+
+Failed runtime or inventory requests no longer authorize provisioning a missing
+container. A stopped Docker workspace is distinguished from an unreachable one
+so explicit Start can resume it. A failed initial workspace creation can be
+retried through Oblien's `retryCreation` endpoint using the existing ID; this
+does not re-create a previously ready workspace. Failed native updates also
+retain reused workspaces and their disks.
+
+The dashboard retains a service's saved configuration when startup fails and
+opens its detail page for retry. Services without an image, and image services
+with relative repository mounts, use the deployment path to prepare their
+source. Named-volume image services can start directly in a Docker workspace.
+
+Validation used the real service/repository code with provider mocks for
+placement, sizing, quota refusal, failed provisioning and retry behavior, plus
+the adapter and dashboard launch tests. The API, platform, adapter and dashboard
+TypeScript checks were run. The live staging test passed all 31 checks at
+09:43 UTC on `preview.oblien.com`, including two containers on one workspace,
+private DNS, public HTTPS, persistent volumes, updates, rollback, and recovery.
+Its namespace, workspace and Pages were deleted. The first run failed during
+provider boot; the second run used the same image and resource configuration and
+passed. The staging script now records provider provisioning details on future
+failures. This run did not exercise customer checkout or deploy the API/dashboard
+changes to production.
+
+## Shared Docker execution audit, 2026-09-24
+
+Cloud Compose uses the same Compose planner, Docker image builder, container
+deployment, environment replacement, backup executor, and retention/rollback
+implementation as self-hosted Docker. `CloudDockerRuntime` extends
+`DockerRuntime`; its authenticated transport and command executor target the
+project's bound Oblien workspace. Provider-specific code owns namespace access,
+spending checks, workspace provisioning/resizing/recovery, source staging, and
+public edge routes. An added Compose service is another container in that
+workspace. It does not allocate another workspace.
+
+The audit closed these gaps:
+
+- Source preparation now follows the shared Compose service selection. Image-only
+  deployments and retained-image restores do not clone a repository unless a
+  selected service needs files for a relative mount.
+- Inline catalog Dockerfiles and files are validated once and staged directly
+  inside the workspace. They do not require API-host filesystem access.
+- Uploaded source identity survives the common build-config factory for both the
+  shared checkout and each service image. Uploads need no Git credential.
+- Stopped containers retain their published port reservations through Docker's
+  configured bindings, preventing new services from taking those endpoints.
+- A bound Docker project rejects the native single-app execution mode instead
+  of running a different lifecycle against its existing workspace and data.
+
+The targeted API/adapter suites passed 347 tests. API, platform, and adapter
+TypeScript checks passed. The extended live staging test passed 36 checks at
+10:08 UTC, including inline builds with API-host source access disabled,
+environment apply retaining the exact image and volumes, and redeploy of a
+stopped service retaining both published ports. It also covered shared-network
+DNS, binary/archive transfer, backup/restore, updates, rollback, HTTPS routing,
+workspace recovery, and complete cleanup of its disposable namespace, workspace,
+and route Pages. These checks exercise the deployment lifecycle; they do not
+certify customer checkout or publish the local changes.
 
 ## Newly supplied staging key, 2026-09-17
 

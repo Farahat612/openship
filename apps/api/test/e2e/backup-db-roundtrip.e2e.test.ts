@@ -150,7 +150,7 @@ describeDockerE2E("logical database backup — pg_dump against a live Postgres",
     runtime = await DockerRuntime.create({ transport: "socket" });
     await runtime.pullImage(IMAGE);
 
-    const org = await seedOrg();
+    const org = await seedOrg({ ownsHost: true });
     organizationId = org.organizationId;
     const slug = `bk-db-${randomBytes(4).toString("hex")}`;
     const project = await seedProject(organizationId, { slug, name: slug });

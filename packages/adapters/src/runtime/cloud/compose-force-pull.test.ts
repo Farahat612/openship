@@ -18,6 +18,22 @@ const config: MultiServiceDeployConfig = {
 };
 
 describe("cloud compose forced image refresh", () => {
+  it("keeps an existing native service workspace when an update fails", async () => {
+    const existing = {
+      get: vi.fn(async () => ({ id: "workspace-live" })),
+      lifecycle: { makePermanent: vi.fn(async () => { throw new Error("Provider unavailable"); }) },
+      delete: vi.fn(),
+    };
+    const create = vi.fn();
+    const support = new CloudComposeSupport({
+      client: { workspaces: { create } }, builtArtifacts: new Map(), workspace: () => existing,
+    } as never);
+    const group = await support.ensureServiceGroup({ deploymentId: config.deploymentId, projectId: config.projectId, slug: config.slug });
+    await expect(support.deployServiceWorkload(group, { ...config, forcePull: false })).rejects.toThrow("Provider unavailable");
+    expect(existing.delete).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it("fails before touching a persistent image workspace", async () => {
     const workspace = vi.fn();
     const support = new CloudComposeSupport({
