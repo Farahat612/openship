@@ -33,8 +33,8 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("GitHub repository reads with rejected credentials (#944)", () => {
-  it("retries through the authorized App without selecting the rejected token again", async () => {
-    wire.mockResolvedValueOnce(reply(401, { message: "Bad credentials" }))
+  it.each([401, 403])("retries through the authorized App without selecting the rejected token again (%i)", async (status) => {
+    wire.mockResolvedValueOnce(reply(status, { message: "Bad credentials" }))
       .mockResolvedValueOnce(reply(200, { full_name: "acme/api", private: true }));
     expect(await githubFetch(options)).toMatchObject({ full_name: "acme/api" });
     expect(h.tokenFor).toHaveBeenCalledWith(ctx, "local", expect.objectContaining({
@@ -87,10 +87,13 @@ describe("GitHub repository reads with rejected credentials (#944)", () => {
 
   it.each([
     [403, "API rate limit exceeded", {}],
+    [403, "Forbidden", { "x-ratelimit-remaining": "0" }],
     [403, "Forbidden", { "retry-after": "60" }],
+    [403, "You have triggered an abuse detection mechanism", {}],
+    [404, "Not Found", {}],
     [429, "Too many requests", {}],
     [503, "Unavailable", {}],
-  ] as const)("does not retry a rate limit or outage: %i %s", async (status, message, headers) => {
+  ] as const)("does not retry a rate limit, missing resource, or outage: %i %s", async (status, message, headers) => {
     wire.mockResolvedValue(reply(status, { message }, headers));
     await expect(githubFetch(options)).rejects.toMatchObject({ status });
     expect(wire).toHaveBeenCalledOnce();

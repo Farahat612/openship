@@ -33,6 +33,18 @@ export interface GhRequest {
   headers?: Record<string, string>;
 }
 
+/** Shared by credential health checks and request fallback. GitHub also uses
+ * 403 for rate limits, which say nothing about whether a token is valid. */
+export function isGitHubCredentialRejected(
+  status: number,
+  headers: Headers,
+  message?: unknown,
+): boolean {
+  return status === 401 || (status === 403 &&
+    headers.get("x-ratelimit-remaining") !== "0" && !headers.has("retry-after") &&
+    !(typeof message === "string" && /rate limit|abuse detection/i.test(message)));
+}
+
 /** Machine-readable failure details; callers must not infer retry policy from
  * translated/upstream error text or retry mutations after an auth failure. */
 export class GitHubApiError extends Error {
@@ -41,11 +53,7 @@ export class GitHubApiError extends Error {
   constructor(readonly status: number, message: string, headers: Headers) {
     super(`GitHub API error (${status}): ${message}`);
     this.name = "GitHubApiError";
-    const rateLimited = status === 429 || (status === 403 && (
-      headers.get("x-ratelimit-remaining") === "0" || headers.has("retry-after") ||
-      /rate limit|abuse detection/i.test(message)
-    ));
-    this.credentialRejected = !rateLimited && (status === 401 || status === 403);
+    this.credentialRejected = isGitHubCredentialRejected(status, headers, message);
   }
 }
 

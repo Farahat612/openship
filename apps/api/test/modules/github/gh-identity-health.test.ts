@@ -23,7 +23,10 @@ const { cacheGet, cacheSet, cacheDelete } = vi.hoisted(() => ({
 
 vi.mock("@repo/platform/engine/modules/github/github.auth", () => ({ getGitHubAuthMode }));
 
-vi.mock("@repo/platform/engine/modules/github/github.http", () => ({ ghFetchSoft: vi.fn() }));
+vi.mock("@repo/platform/engine/modules/github/github.http", async (original) => ({
+  ...(await original<object>()),
+  ghFetchSoft: vi.fn(),
+}));
 
 vi.mock("@repo/db", () => ({
   repos: { instanceSettings: { get: instanceSettingsGet, upsert: vi.fn() } },
