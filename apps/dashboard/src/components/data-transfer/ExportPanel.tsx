@@ -2,10 +2,11 @@
 
 import { Icon as UiIcon } from "@repo/ui/icons";
 
-import { useEffect, useMemo, useState } from "react";
-import { dataTransferApi, type ExportPreview, type ExportSelection } from "@/lib/api/data-transfer";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { dataTransferApi, type ExportPreview, type ExportSelection, type TransferManifest } from "@/lib/api/data-transfer";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { useToast } from "@/context/ToastContext";
+import { TransferRequirements } from "./TransferRequirements";
 import {
   ALL_HISTORY,
   HISTORY_LABELS,
@@ -44,10 +45,12 @@ export function ExportPanel({
   const [error, setError] = useState("");
   const [passphrase, setPassphrase] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [downloaded, setDownloaded] = useState<{ filename: string; manifest?: TransferManifest } | null>(null);
+  const downloadLock = useRef(false);
   const selectionKey = JSON.stringify({ ...selection, history: ALL_HISTORY, includeSecrets: true });
   const validSelection = selection.scope !== "projects" || !!selection.projectIds?.length;
-  const needsPassword = selection.includeSecrets !== false;
-  const mismatch = !!passphrase && passphrase !== confirm;
+  const needsPassword = selection.scope !== "projects" && selection.includeSecrets !== false;
+  const mismatch = needsPassword && !!passphrase && passphrase !== confirm;
   const selectedRows = preview
     ? preview.core + selection.history.reduce((sum, category) => sum + preview.history[category], 0)
     : null;
@@ -97,7 +100,8 @@ export function ExportPanel({
     setConfirm(value);
   };
   const download = async () => {
-    if (!validSelection || mismatch || (needsPassword && !passphrase)) return;
+    if (downloadLock.current || loading || !preview || !validSelection || mismatch || (needsPassword && !passphrase)) return;
+    downloadLock.current = true;
     setBusy(true);
     setError("");
     try {
@@ -110,9 +114,13 @@ export function ExportPanel({
       const label = (
         projectName ?? (selection.scope === "projects" ? "projects" : "instance")
       ).replace(/[^a-z0-9_-]+/gi, "-");
-      anchor.download = `openship-${label}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      const filename = `openship-${label}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      anchor.download = filename;
+      document.body.append(anchor);
       anchor.click();
+      anchor.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setDownloaded({ filename, manifest: file.manifest });
       showToast(
         "Export downloaded. Import it from Settings → Instance on the destination control plane.",
         "success",
@@ -121,9 +129,65 @@ export function ExportPanel({
     } catch (error) {
       setError(getApiErrorMessage(error, "Export failed."));
     } finally {
+      downloadLock.current = false;
       setBusy(false);
     }
   };
+
+  const downloadButton = (
+    <button
+      type="button"
+      className={transferButtonClass}
+      disabled={busy || loading || !preview || !validSelection || (needsPassword && (!passphrase || mismatch))}
+      onClick={() => void download()}
+    >
+      {busy ? <UiIcon name="spinner" className="size-4 animate-spin" /> : <UiIcon name="download" className="size-4" />}
+      {busy ? "Exporting…" : downloaded ? "Download again" : "Download export"}
+    </button>
+  );
+  const downloadResult = downloaded && (
+    <div className="space-y-3">
+      <div role="status" className="flex items-start gap-2.5 rounded-xl bg-success-bg p-3">
+        <UiIcon name="check" className="mt-0.5 size-4 shrink-0 text-success" />
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-foreground">Export downloaded</p>
+          <p className="mt-0.5 break-all text-xs text-muted-foreground">{downloaded.filename}</p>
+        </div>
+      </div>
+      <TransferRequirements manifest={downloaded.manifest} />
+      <TransferWarnings warnings={downloaded.manifest?.warnings ?? []} />
+    </div>
+  );
+  const errorMessage = error && (
+    <p role="alert" className="whitespace-pre-wrap text-xs text-danger">{error}</p>
+  );
+
+  if (projectId) {
+    return (
+      <div className="space-y-4">
+        {downloadResult || (
+          <>
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              Includes all environments, services, deployment history, connections, domains,
+              backup settings, environment values, and keys. The JSON file is unencrypted and
+              imports without a password.
+            </p>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              The destination needs the same servers or OpenShip Cloud account to reconnect to
+              existing workloads. Their details will be shown after download.
+            </p>
+            <p aria-live="polite" className="text-xs text-muted-foreground">
+              {loading ? "Checking export contents…" : preview
+                ? `${selectedRows?.toLocaleString()} records across ${preview.manifest?.projects.length ?? 1} environments included.`
+                : ""}
+            </p>
+          </>
+        )}
+        {errorMessage}
+        {downloadButton}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -132,31 +196,29 @@ export function ExportPanel({
         credentials for another control plane. Workloads on the same server can keep their existing
         target bindings.
       </p>
-      {!projectId && (
-        <label className="block space-y-1 text-sm font-medium text-foreground">
-          Export scope
-          <select
-            aria-label="Export scope"
-            disabled={busy}
-            value={selection.scope}
-            className={transferInputClass}
-            onChange={(event) =>
-              patch({
-                scope: event.target.value as "instance" | "projects",
-                projectIds: event.target.value === "projects" ? [] : undefined,
-                includeServers: true,
-                includeDomains: true,
-                includeBackups: true,
-                includeIntegrations: true,
-              })
-            }
-          >
-            <option value="instance">Entire instance</option>
-            <option value="projects">Selected projects and environments</option>
-          </select>
-        </label>
-      )}
-      {!projectId && selection.scope === "projects" && (
+      <label className="block space-y-1 text-sm font-medium text-foreground">
+        Export scope
+        <select
+          aria-label="Export scope"
+          disabled={busy}
+          value={selection.scope}
+          className={transferInputClass}
+          onChange={(event) =>
+            patch({
+              scope: event.target.value as "instance" | "projects",
+              projectIds: event.target.value === "projects" ? [] : undefined,
+              includeServers: true,
+              includeDomains: true,
+              includeBackups: true,
+              includeIntegrations: true,
+            })
+          }
+        >
+          <option value="instance">Entire instance</option>
+          <option value="projects">Selected projects and environments</option>
+        </select>
+      </label>
+      {selection.scope === "projects" && (
         <TransferProjectPicker
           projects={catalogue}
           selected={selection.projectIds ?? []}
@@ -166,15 +228,6 @@ export function ExportPanel({
       )}
       {selection.scope === "projects" && (
         <div className="grid gap-2 sm:grid-cols-2">
-          {projectId && (
-            <TransferOption
-              label="All project environments"
-              description="Include production, preview, and other environments belonging to this project."
-              checked={selection.includeEnvironments !== false}
-              onChange={(includeEnvironments) => patch({ includeEnvironments })}
-              disabled={busy}
-            />
-          )}
           <TransferOption
             label="Linked apps"
             description="Include database and storage projects required by the selection."
@@ -213,8 +266,10 @@ export function ExportPanel({
       )}
       <TransferOption
         label="Environment values, keys, and credentials"
-        description="Includes inline Compose configuration and secret files stored in metadata. Protected with the transfer password below."
-        checked={needsPassword}
+        description={selection.scope === "projects"
+          ? "Included as readable JSON, with inline Compose configuration and secret files stored in metadata."
+          : "Includes inline Compose configuration and secret files stored in metadata. Protected with the transfer password below."}
+        checked={selection.includeSecrets !== false}
         onChange={(includeSecrets) => patch({ includeSecrets })}
         disabled={busy}
       />
@@ -324,26 +379,9 @@ export function ExportPanel({
           </div>
         </div>
       )}
-      {error && (
-        <p role="alert" className="whitespace-pre-wrap text-xs text-danger">
-          {error}
-        </p>
-      )}
-      <button
-        type="button"
-        className={transferButtonClass}
-        disabled={
-          busy ||
-          loading ||
-          !preview ||
-          !validSelection ||
-          (needsPassword && (!passphrase || mismatch))
-        }
-        onClick={() => void download()}
-      >
-        {busy ? <UiIcon name="spinner" className="size-4 animate-spin" /> : <UiIcon name="download" className="size-4" />}
-        {busy ? "Exporting…" : "Download export"}
-      </button>
+      {downloadResult}
+      {errorMessage}
+      {downloadButton}
     </div>
   );
 }

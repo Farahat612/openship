@@ -5,6 +5,7 @@ import type {
   ExportPreview,
   ImportSelection,
   ImportPreview,
+  TransferManifest,
 } from "@repo/core";
 export type {
   ExportSelection,
@@ -14,6 +15,7 @@ export type {
   ImportPreview,
   TransferProject,
   TransferServer,
+  TransferManifest,
 } from "@repo/core";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { api, ApiError, getActiveOrganizationId, getApiBaseUrl } from "./client";
@@ -28,7 +30,7 @@ import { endpoints } from "./endpoints";
 
 export type ImportMode = "wipe" | "merge";
 /** Opaque export file — the dashboard treats it as a JSON blob to download. */
-export type DataTransferFile = Record<string, unknown>;
+export type DataTransferFile = Record<string, unknown> & { manifest?: TransferManifest };
 
 export interface ImportResult {
   mode: ImportMode;

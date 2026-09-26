@@ -2,9 +2,9 @@
  * Wire types for instance and project data export / import.
  *
  * The export file wraps an UNCHANGED `DatabaseDump` (so restoreSubgraph's
- * format-version gate is untouched) plus a passphrase-sealed bundle of every
- * secret's plaintext. The dump payload itself carries NO secret ciphertext —
- * secrets live only inside `secrets`, encrypted under the user's passphrase.
+ * format-version gate is untouched) plus a portable bundle of secret values.
+ * Project files can carry these values as plain JSON; password-protected files
+ * retain their sealed bundle. Imports encrypt values with the destination key.
  */
 
 import type { DatabaseDump } from "@repo/db";
@@ -57,9 +57,15 @@ export interface SealedSecrets {
   blob: string;
 }
 
+export interface PlaintextSecrets extends SecretBundle {
+  encoding: "plaintext";
+}
+
+export type TransferSecrets = SealedSecrets | PlaintextSecrets;
+
 export interface DataTransferFile {
   kind: "openship-instance-export" | "openship-project-export";
-  envelopeVersion: 1 | 2;
+  envelopeVersion: 1 | 2 | 3;
   createdAt: string;
   sourceDriver: "pg" | "pglite";
   /** Absent on legacy files, which always contained all history groups. */
@@ -67,15 +73,15 @@ export interface DataTransferFile {
   manifest?: TransferManifest;
   summary?: { rows: number; tables: number };
   dump: DatabaseDump;
-  /** null = the export carried no secrets (no passphrase given). */
-  secrets: SealedSecrets | null;
+  /** Version 3 project files support plaintext values. null omits credentials. */
+  secrets: TransferSecrets | null;
 }
 
 export interface ImportResult {
   mode: ImportMode;
   rowsRestored: number;
   secretsRehydrated: number;
-  /** true when the file had no sealed secrets or restoring secrets was disabled. */
+  /** true when the file had no secrets or restoring secrets was disabled. */
   secretsSkipped: boolean;
   /**
    * Projects whose source is a LOCAL FOLDER path (localPath / folder-upload).

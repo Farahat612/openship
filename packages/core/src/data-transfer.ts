@@ -93,6 +93,8 @@ export interface ImportPreview {
   history: Record<ExportHistoryCategory, number>;
   rows: number;
   hasSecrets: boolean;
+  /** False for plain project exports; absent on older APIs that sealed all secrets. */
+  requiresPassphrase?: boolean;
   warnings: string[];
   blockers: string[];
 }

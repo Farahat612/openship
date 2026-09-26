@@ -42,11 +42,12 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
   const currentKey = JSON.stringify(selection);
   const reviewed = !!preview && reviewedKey === currentKey;
   const hasSelection = selection.scope === "instance" || !!selection.projectIds?.length;
+  const requiresPassphrase = preview?.requiresPassphrase ?? preview?.hasSecrets ?? false;
   const canImport =
     reviewed &&
     hasSelection &&
     !preview.blockers.length &&
-    (!preview.hasSecrets || selection.includeSecrets === false || !!passphrase);
+    (!requiresPassphrase || selection.includeSecrets === false || !!passphrase);
   const patch = (value: Partial<ImportSelection>) =>
     setSelection((current) => ({ ...current, ...value }));
   const reportProgress = (done: number, total: number) => setProgress({ done, total });
@@ -462,7 +463,7 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
                   onChange={(includeSecrets) => patch({ includeSecrets })}
                   disabled={busy || !preview.hasSecrets}
                 />
-                {preview.hasSecrets && selection.includeSecrets !== false && (
+                {requiresPassphrase && selection.includeSecrets !== false && (
                   <label className="block space-y-1 text-xs font-medium text-foreground">
                     Transfer password
                     <input

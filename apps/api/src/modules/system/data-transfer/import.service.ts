@@ -26,7 +26,7 @@ import { env } from "@repo/platform/engine/config/env";
 import { reconcileRuntimeStateAfterImport } from "../../../lib/database-runtime-state";
 import { reassertMigrationLockAfterRestore, withMigrationLock } from "../migration/migration-lock";
 import { CloudInstanceNotTransferableError } from "./errors";
-import { openTransferSecrets } from "./passphrase-crypto";
+import { openTransferSecrets, transferSecretsRequirePassphrase } from "./passphrase-crypto";
 import { sealForInstance } from "./secret-codec";
 import { SECRET_COLUMNS, stripTransferSecrets, type SecretColumn } from "./secret-registry";
 import {
@@ -96,9 +96,9 @@ export function assertValidEnvelope(file: DataTransferFile): void {
   ) {
     throw new InvalidTransferFileError("Not an Openship export file.");
   }
-  if (file.envelopeVersion !== 1 && file.envelopeVersion !== 2) {
+  if (file.envelopeVersion !== 1 && file.envelopeVersion !== 2 && file.envelopeVersion !== 3) {
     throw new InvalidTransferFileError(
-      `Unsupported export version ${file.envelopeVersion}; this build reads versions 1 and 2.`,
+      `Unsupported export version ${file.envelopeVersion}; this build reads versions 1, 2 and 3.`,
     );
   }
   if (
@@ -119,6 +119,22 @@ export function assertValidEnvelope(file: DataTransferFile): void {
     )
   ) {
     throw new InvalidTransferFileError("The export contains an invalid database snapshot.");
+  }
+  if (file.secrets) {
+    if (typeof file.secrets !== "object" || Array.isArray(file.secrets)) {
+      throw new InvalidTransferFileError("The credential bundle is invalid.");
+    }
+    if ("encoding" in file.secrets) {
+      if (
+        file.secrets.encoding !== "plaintext" ||
+        file.envelopeVersion !== 3 ||
+        file.kind !== "openship-project-export" ||
+        "kdf" in file.secrets || "blob" in file.secrets
+      ) {
+        throw new InvalidTransferFileError("Plaintext credentials require a version 3 project export.");
+      }
+      assertValidSecretBundle(file.secrets);
+    }
   }
   if (
     file.manifest &&
@@ -228,6 +244,7 @@ export async function previewInstanceImport(opts: {
     ).history,
     rows: Object.values(opts.file.dump.tables).reduce((n, rows) => n + rows.length, 0),
     hasSecrets: !!opts.file.secrets,
+    requiresPassphrase: transferSecretsRequirePassphrase(opts.file.secrets),
     warnings: opts.file.manifest?.warnings ?? [],
     blockers: [],
   };
