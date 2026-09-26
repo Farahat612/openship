@@ -57,6 +57,7 @@ import { relative, sep } from "node:path";
 import { resolveDockerBuildArgs } from "./docker-build-args";
 import { dockerPublishedPortInfo } from "./docker-container-info";
 import { applyDockerEnvironment, type DockerEnvironmentOptions } from "./docker-environment";
+import { DEFAULT_CONTAINER_LOG_CONFIG } from "../container-logging";
 
 /**
  * Detect "not found" errors from the Docker SDK (dockerode). The daemon
@@ -240,15 +241,6 @@ const RESTART_POLICIES: Record<string, { Name: string; MaximumRetryCount: number
   "unless-stopped": { Name: "unless-stopped", MaximumRetryCount: 0 },
   no: { Name: "no", MaximumRetryCount: 0 },
 };
-
-/** Default bounded container logging options to prevent unbounded disk growth. */
-export const DEFAULT_CONTAINER_LOG_CONFIG = {
-  Type: "json-file",
-  Config: {
-    "max-size": "20m",
-    "max-file": "3",
-  },
-} as const;
 
 interface DockerodeBuildStreamOptions {
   trace?: BuildKitTraceDecoder;

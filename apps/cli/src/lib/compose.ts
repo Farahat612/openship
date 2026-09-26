@@ -38,6 +38,7 @@ import {
   resolveLocalEnvironmentSync,
 } from "@repo/adapters";
 import { sanitizeEdgeVhosts } from "@repo/adapters/proxy";
+import { DEFAULT_CONTAINER_LOG_CONFIG } from "@repo/adapters/container-logging";
 import {
   DEFAULT_IMAGE_REGISTRY,
   explainHostChannelCause,
@@ -499,10 +500,10 @@ export interface ComposeUpOpts {
 /** Pinned compose stack. Vars come from the generated .env (env_file + interpolation). */
 const COMPOSE_YAML = `# Managed by \`openship up\` — do not edit; re-run \`openship up\` to regenerate.
 x-logging: &default-logging
-  driver: "json-file"
+  driver: "${DEFAULT_CONTAINER_LOG_CONFIG.Type}"
   options:
-    max-size: "20m"
-    max-file: "3"
+    max-size: "${DEFAULT_CONTAINER_LOG_CONFIG.Config["max-size"]}"
+    max-file: "${DEFAULT_CONTAINER_LOG_CONFIG.Config["max-file"]}"
 
 services:
   postgres:

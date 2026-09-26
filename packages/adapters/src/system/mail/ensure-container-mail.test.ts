@@ -34,6 +34,9 @@ describe("buildMailRunCommand", () => {
     expect(cmd).toContain("--network host");
     expect(cmd).toContain("--cap-add NET_ADMIN");
     expect(cmd).toContain("--restart unless-stopped");
+    expect(cmd).toContain("--log-driver json-file");
+    expect(cmd).toContain("--log-opt max-size=20m");
+    expect(cmd).toContain("--log-opt max-file=3");
     expect(cmd).toContain("--env-file");
     // The Postfix queue must be a bind mount or a recreate drops in-flight mail.
     expect(cmd).toContain("/var/spool/postfix");
@@ -50,6 +53,7 @@ describe("buildDbRunCommand", () => {
     expect(cmd).toContain("-p '127.0.0.1:5432:5432'");
     expect(cmd).toContain("--name 'openship-mail-db'");
     expect(cmd).toContain("--restart unless-stopped");
+    expect(cmd).toContain("--log-driver json-file");
     expect(cmd).toContain("--log-opt max-size=20m");
     expect(cmd).toContain("--log-opt max-file=3");
   });
@@ -57,18 +61,6 @@ describe("buildDbRunCommand", () => {
   it("binds a custom host port mapped to internal 5432 container port", () => {
     const cmd = buildDbRunCommand("openship-mail-db", 5433);
     expect(cmd).toContain("-p '127.0.0.1:5433:5432'");
-  });
-});
-
-describe("buildMailRunCommand", () => {
-  it("includes host network, log rotation, and capabilities", () => {
-    const cmd = buildMailRunCommand("openship-mail", "openship/mail:test", "mail.example.com");
-    expect(cmd).toContain("--network host");
-    expect(cmd).toContain("--hostname 'mail.example.com'");
-    expect(cmd).toContain("--restart unless-stopped");
-    expect(cmd).toContain("--log-opt max-size=20m");
-    expect(cmd).toContain("--log-opt max-file=3");
-    expect(cmd).toContain("--cap-add NET_ADMIN");
   });
 });
 
