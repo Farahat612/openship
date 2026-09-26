@@ -17,6 +17,7 @@ import { isLoopbackHost } from "@repo/core";
 import { getCloudConnectionStatusForOrg } from "@repo/platform/engine/lib/cloud/session";
 import { needsExplicitServerMapping, transferServer } from "./export.service";
 import { resolveExportSelection, summarizeExportCounts } from "./selection";
+import { transferSecretsRequirePassphrase } from "./passphrase-crypto";
 import type {
   DataTransferFile,
   ImportPreview,
@@ -787,6 +788,7 @@ export async function planProjectImport(
     ).history,
     rows: Object.values(restored).reduce((sum, rows) => sum + rows.length, 0),
     hasSecrets: !!file.secrets,
+    requiresPassphrase: transferSecretsRequirePassphrase(file.secrets),
     warnings: [...new Set(warnings)],
     blockers: [...new Set(blockers)],
   };

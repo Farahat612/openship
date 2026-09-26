@@ -11,7 +11,7 @@ import { StorageSettings } from "./StorageSettings";
 import { ResourceSettings } from "./ResourceSettings";
 
 /**
- * Project → Configuration. Build settings link to the deploy wizard; project
+ * Configuration cards within project Settings. Build settings link to the deploy wizard; project
  * environment, resources and storage use their existing focused editors.
  * Shared project environment remains available for every workload type.
  *

@@ -136,7 +136,7 @@ describe("passphrase-crypto", () => {
     expect(() => openSecretBundle(sealed, "wrong")).toThrow(WrongPassphraseError);
   });
 
-  it("requires a transfer secret whenever the export contains credentials", () => {
+  it("requires a password when the export contains sealed credentials", () => {
     const sealed = sealSecretBundle(bundle, "correct horse");
     expect(() => openTransferSecrets(sealed)).toThrow(WrongPassphraseError);
     expect(openTransferSecrets(null)).toBeNull();

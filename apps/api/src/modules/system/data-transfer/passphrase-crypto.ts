@@ -12,7 +12,7 @@
 import { randomBytes, scryptSync } from "node:crypto";
 
 import { decryptWithKey, encryptWithKey } from "@repo/platform/engine/lib/encryption";
-import type { SealedSecrets, SecretBundle } from "./types";
+import type { PlaintextSecrets, SealedSecrets, SecretBundle, TransferSecrets } from "./types";
 
 const KDF = { algo: "scrypt" as const, N: 32768, r: 8, p: 1, keyLen: 32 };
 // scrypt needs maxmem >= 128*N*r (~32 MiB here); give headroom, and it also
@@ -59,16 +59,21 @@ export function openSecretBundle(sealed: SealedSecrets, passphrase: string): Sec
   }
 }
 
-/**
- * Resolve the optional credential envelope for import. A file without an
- * envelope is intentionally credential-free; a file with one must always be
- * unlocked instead of silently importing scrubbed credential columns.
- */
+export function isPlaintextSecrets(secrets: TransferSecrets): secrets is PlaintextSecrets {
+  return "encoding" in secrets && secrets.encoding === "plaintext";
+}
+
+export function transferSecretsRequirePassphrase(secrets: TransferSecrets | null): boolean {
+  return !!secrets && !isPlaintextSecrets(secrets);
+}
+
+/** Read plain project values or unlock a legacy/password-protected bundle. */
 export function openTransferSecrets(
-  sealed: SealedSecrets | null,
+  secrets: TransferSecrets | null,
   passphrase?: string,
 ): SecretBundle | null {
-  if (!sealed) return null;
+  if (!secrets) return null;
+  if (isPlaintextSecrets(secrets)) return { version: secrets.version, entries: secrets.entries };
   if (!passphrase) throw new WrongPassphraseError();
-  return openSecretBundle(sealed, passphrase);
+  return openSecretBundle(secrets, passphrase);
 }

@@ -5,7 +5,6 @@ import { Icon as UiIcon } from "@repo/ui/icons";
 import { DomainSettings } from "../components/DomainSettings";
 import { GitSettings } from "../components/GitSettings";
 import { IncomingWebhooks } from "../components/IncomingWebhooks";
-import { BuildSettings } from "../components/BuildSettings";
 import { LogsSettings } from "../components/LogsSettings";
 import { BackupSettings } from "../components/BackupSettings";
 import { Deployments } from "../components/Deployments";
@@ -13,8 +12,6 @@ import { HealthTab } from "../components/HealthTab";
 import { MonitoringTab } from "../components/MonitoringTab";
 import { AdvancedSettings } from "../components/AdvancedSettings";
 import { OverviewTab } from "../components/OverviewTab";
-import { AppConfiguration } from "../components/AppConfiguration";
-import { isSchemaAppTemplate } from "@/components/app-settings/AppSettingsForm";
 import { ServicesTab } from "../components/ServicesTab";
 import { ProjectTopologyPage } from "@/components/topology/ProjectTopologyPage";
 import { ProjectSidebar, ProjectMobileTabs } from "../components/ProjectSidebar";
@@ -840,25 +837,12 @@ const ProjectSettingsContent = () => {
         return <GitSettings />;
       case "webhooks":
         return <IncomingWebhooks />;
-      case "runtime":
-      case "settings":
-        // Apps get the 2-mode Configuration surface (App settings | Deployment);
-        // regular projects get the raw build/runtime config.
-        return projectData.isApp && isSchemaAppTemplate(projectData.appTemplateId) ? (
-          <AppConfiguration />
-        ) : (
-          <BuildSettings />
-        );
       case "logs":
         return <LogsSettings />;
       case "backup":
         return <BackupSettings />;
       case "advanced":
-        return (
-          <div className="space-y-5">
-            <AdvancedSettings onDeleteProject={handleDeleteProject} />
-          </div>
-        );
+        return <AdvancedSettings onDeleteProject={handleDeleteProject} />;
       default:
         return <OverviewTab />;
     }

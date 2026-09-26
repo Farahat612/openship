@@ -550,8 +550,9 @@ it("transfers multiple HTTP chunks atomically and resumes a file import after re
     findSecret(openTransferSecrets(finalExport.secrets, FILE_PASSPHRASE), FILE_SECRET_VALUE),
   ).toBe(true);
 
-  // Project exports use the same authenticated HTTP surface and encryption,
-  // but must preserve every unrelated destination record and identity.
+  // Project downloads carry readable values without a password. The real HTTP
+  // upload and SSE import must restore them under the destination's key while
+  // preserving every unrelated project and identity.
   const scopedProject = await createProject(source.baseUrl, "Scoped transfer", "scoped-transfer");
   await mergeEnv(source.baseUrl, scopedProject.id, [
     { key: "SCOPED_SECRET", value: "scoped-original", isSecret: true },
@@ -560,7 +561,6 @@ it("transfers multiple HTTP chunks atomically and resumes a file import after re
     jsonRequest<DataTransferFile>(source.baseUrl, "/api/system/data-transfer/export", {
       method: "POST",
       body: JSON.stringify({
-        passphrase: FILE_PASSPHRASE,
         selection: {
           scope: "projects",
           projectIds: [scopedProject.id],
@@ -571,6 +571,9 @@ it("transfers multiple HTTP chunks atomically and resumes a file import after re
     });
   const scopedFile = await scopedExport();
   expect(scopedFile.kind).toBe("openship-project-export");
+  expect(scopedFile.envelopeVersion).toBe(3);
+  expect(scopedFile.secrets).toMatchObject({ encoding: "plaintext" });
+  expect(JSON.stringify(scopedFile)).toContain("scoped-original");
   expect(scopedFile.dump.tables.project?.map((row) => row.id)).toEqual([scopedProject.id]);
   expect(scopedFile.dump.tables.user).toBeUndefined();
   const scopedBytes = Buffer.from(JSON.stringify(scopedFile));
@@ -617,6 +620,8 @@ it("transfers multiple HTTP chunks atomically and resumes a file import after re
     },
   );
   expect(reviewed.blockers).toEqual([]);
+  expect(reviewed.hasSecrets).toBe(true);
+  expect(reviewed.requiresPassphrase).toBe(false);
   const beforeScopedImport = await jsonRequest<{ data: Array<{ id: string }> }>(
     destination.baseUrl,
     "/api/projects?perPage=100",
@@ -627,7 +632,6 @@ it("transfers multiple HTTP chunks atomically and resumes a file import after re
     `/api/system/data-transfer/import/session/${scopedUpload.uploadId}/finalize/stream`,
     {
       mode: "merge",
-      passphrase: FILE_PASSPHRASE,
       selection: scopedSelection,
     },
   );
@@ -643,13 +647,12 @@ it("transfers multiple HTTP chunks atomically and resumes a file import after re
     jsonRequest<DataTransferFile>(destination.baseUrl, "/api/system/data-transfer/export", {
       method: "POST",
       body: JSON.stringify({
-        passphrase: FILE_PASSPHRASE,
         selection: { scope: "projects", projectIds: [scopedProject.id], history: [] },
       }),
     });
   expect(
     findSecret(
-      openTransferSecrets((await targetScopedExport()).secrets, FILE_PASSPHRASE),
+      openTransferSecrets((await targetScopedExport()).secrets),
       "scoped-original",
     ),
   ).toBe(true);
@@ -665,7 +668,6 @@ it("transfers multiple HTTP chunks atomically and resumes a file import after re
       method: "POST",
       body: JSON.stringify({
         file: updatedFile,
-        passphrase: FILE_PASSPHRASE,
         mode: "merge",
         selection: scopedSelection,
       }),
@@ -674,7 +676,7 @@ it("transfers multiple HTTP chunks atomically and resumes a file import after re
   expect(skipped.rowsRestored).toBe(0);
   expect(
     findSecret(
-      openTransferSecrets((await targetScopedExport()).secrets, FILE_PASSPHRASE),
+      openTransferSecrets((await targetScopedExport()).secrets),
       "scoped-original",
     ),
   ).toBe(true);
@@ -685,7 +687,6 @@ it("transfers multiple HTTP chunks atomically and resumes a file import after re
       method: "POST",
       body: JSON.stringify({
         file: updatedFile,
-        passphrase: FILE_PASSPHRASE,
         mode: "merge",
         selection: { ...scopedSelection, conflictPolicy: "overwrite" },
       }),
@@ -694,7 +695,7 @@ it("transfers multiple HTTP chunks atomically and resumes a file import after re
   expect(overwritten.projectsUpdated).toBe(1);
   expect(
     findSecret(
-      openTransferSecrets((await targetScopedExport()).secrets, FILE_PASSPHRASE),
+      openTransferSecrets((await targetScopedExport()).secrets),
       "scoped-overwritten",
     ),
   ).toBe(true);

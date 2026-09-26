@@ -22,6 +22,9 @@ import { useAuth } from "@/context/AuthContext";
 import { ExportPanel } from "@/components/data-transfer/ExportPanel";
 import { usePlatform } from "@/context/PlatformContext";
 import { ProjectRollbackSettings } from "@/components/rollback/ProjectRollbackSettings";
+import { isSchemaAppTemplate } from "@/components/app-settings/AppSettingsForm";
+import { AppConfiguration } from "./AppConfiguration";
+import { BuildSettings } from "./BuildSettings";
 
 interface Props {
   onDeleteProject: (wipeVolumes?: boolean, recordOnly?: boolean) => void;
@@ -449,6 +452,12 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
 
       </div>
 
+      {projectData.isApp && isSchemaAppTemplate(projectData.appTemplateId) ? (
+        <AppConfiguration />
+      ) : (
+        <BuildSettings />
+      )}
+
       <SectionCard
         title={t.projectSettings.git.rollbackHistory.title}
         description={t.projectSettings.git.rollbackHistory.retentionHint}
@@ -623,7 +632,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
         {selfHosted && user?.role === "admin" && projectId && (
           <SectionCard
             title="Export project"
-            description="Download this project's environments, metadata, keys, and related server connections for another control plane."
+            description="Download all project settings, environment values, and credentials as plain JSON."
             icon={"download"}
             iconTone="primary"
             collapsible

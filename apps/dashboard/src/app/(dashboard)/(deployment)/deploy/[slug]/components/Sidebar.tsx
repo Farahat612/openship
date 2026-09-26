@@ -378,7 +378,7 @@ const Sidebar: React.FC = () => {
     await continueDeploy(buildStrategyOverride ? { buildStrategy: buildStrategyOverride } : undefined);
   }, [baseDomain, canConnectCloud, cloneGate.preference, config.buildStrategy, config.deployTarget, config.owner, config.projectId, config.serverId, config.publicEndpoints, config.services, continueDeploy, hideModal, isServices, localDeployGate, requireCloud, selfHosted, showModal, showToast, updateConfig, t]);
 
-  // Edit mode (opened from the project Runtime page with ?mode=config): the
+  // Edit mode (opened from project Settings with ?mode=config): the
   // finish button SAVES the config to the project and returns — no deploy, no
   // deploy gates (cloud/clone/domain checks are deploy concerns). Deploying is
   // the separate "Redeploy" action on the project page.
@@ -390,11 +390,10 @@ const Sidebar: React.FC = () => {
     try {
       const projectId = await startDeployment({ saveConfigOnly: true });
       if (projectId) {
-        // Bust the cached project info so the Runtime tab shows the just-saved
-        // config (it's served from infoCache and would otherwise be stale), then
-        // return to the Runtime tab the user edited from — not the default tab.
+        // Refresh the cached project info before returning to Settings so it
+        // shows the saved configuration.
         invalidateProjectCaches(projectId);
-        router.push(`/projects/${projectId}/runtime`);
+        router.push(`/projects/${projectId}/advanced`);
       }
     } finally {
       setIsSaving(false);

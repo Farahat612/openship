@@ -955,7 +955,7 @@ export const ProjectSettingsProvider: React.FC<ProviderProps> = ({
   const resolveTab = (tab?: string) => {
     if (tab === "general") return "overview";
     if (tab === "git") return "source";
-    if (tab === "settings" || tab === "build") return "runtime";
+    if (tab === "settings" || tab === "build" || tab === "runtime") return "advanced";
     return tab || undefined; // let default be set by tab list below
   };
 
@@ -994,15 +994,7 @@ export const ProjectSettingsProvider: React.FC<ProviderProps> = ({
       },
       { id: "logs", label: tl.logs, icon: "file-text" },
       { id: "backup", label: tl.backup, icon: "database-backup" },
-      {
-        id: "runtime",
-        label: tl.settings,
-        icon: "wrench",
-        sections: [
-          { id: "runtime", label: tl.runtime },
-          { id: "advanced", label: tl.advanced },
-        ],
-      },
+      { id: "advanced", label: tl.settings, icon: "wrench" },
     ];
   }, [t, projectData.deployTarget, selfHosted]);
 

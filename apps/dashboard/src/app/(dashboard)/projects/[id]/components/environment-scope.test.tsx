@@ -127,10 +127,10 @@ async function editInput(input: HTMLInputElement, value: string) {
 
 describe("project environment access (GH-881)", () => {
   it.each(["nextjs", "docker-compose"])(
-    "keeps %s Configuration reachable and edits shared project inputs without overwriting secrets",
+    "keeps %s Settings reachable and edits shared project inputs without overwriting secrets",
     async (framework) => {
       await mountProject(framework);
-      expect(host.querySelector('nav a[href$="/runtime"]')).not.toBeNull();
+      expect(host.querySelector('nav a[href$="/advanced"]')).not.toBeNull();
       expect(host.textContent).toContain("Project environment (build + shared runtime)");
       await act(async () => button("Edit").click());
       expect(api.getEnv).toHaveBeenCalledWith("project");
@@ -160,7 +160,7 @@ describe("project environment access (GH-881)", () => {
     await mountProject("node");
     expect(host.textContent).toContain("1 sub-app");
     expect(host.textContent).toContain("Project environment (build + shared runtime)");
-    expect(host.querySelector('nav a[href$="/runtime"]')).not.toBeNull();
+    expect(host.querySelector('nav a[href$="/advanced"]')).not.toBeNull();
   });
 
   it("includes shared project inputs in the installed app's Deployment mode", async () => {
