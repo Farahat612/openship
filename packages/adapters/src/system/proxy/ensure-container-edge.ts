@@ -17,6 +17,7 @@
  */
 
 import { buildEdgeImageRef, safeErrorMessage } from "@repo/core";
+import { DEFAULT_CONTAINER_LOG_ARGS } from "../../container-logging";
 import type { CommandExecutor, LogEntry } from "../../types";
 import type { NginxProvider, NginxProviderOptions } from "../../infra/nginx";
 import type { InstallerConfig, SystemLog, SystemLogCallback } from "../types";
@@ -332,6 +333,7 @@ export function buildEdgeRunCommand(
     `--name ${sq(container)}`,
     "--network host",
     "--restart unless-stopped",
+    ...DEFAULT_CONTAINER_LOG_ARGS,
     mounts,
     sq(image),
   ].join(" ");
