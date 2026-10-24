@@ -257,6 +257,7 @@ describe("durable cluster runtime", () => {
   });
   it("keeps cluster and network ownership after failure until verified removal", async () => {
     const { row } = await start();
+    const networkId = cluster.networkId!;
     await runtimes.finish(row.id, 1, plan(), "setup", "Download failed");
     await expect(clusters.remove("org", cluster.id, cluster.revision)).rejects.toThrow(
       "Remove the cluster runtime first",
@@ -264,11 +265,11 @@ describe("durable cluster runtime", () => {
     await expect(
       clusters.update("org", cluster.id, 1, {
         name: "Changed",
-        networkId: cluster.networkId,
+        networkId,
         serverIds: ["a"],
       }),
     ).rejects.toThrow("runtime");
-    await expect(networks.remove("org", cluster.networkId, 1)).rejects.toMatchObject({
+    await expect(networks.remove("org", networkId, 1)).rejects.toMatchObject({
       code: "NETWORK_IN_USE",
     });
     const failed = (await runtimes.get("org", cluster.id))!;
@@ -280,6 +281,6 @@ describe("durable cluster runtime", () => {
       ];
     await runtimes.finish(row.id, removing.row.generation, cleaned, "remove", null);
     await clusters.remove("org", cluster.id, cluster.revision);
-    expect((await networks.get("org", cluster.networkId)).members).toHaveLength(3);
+    expect((await networks.get("org", networkId)).members).toHaveLength(3);
   });
 });

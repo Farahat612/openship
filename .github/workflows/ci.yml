@@ -65,6 +65,13 @@ jobs:
       - name: Typecheck SDK
         run: bun run --cwd packages/sdk lint
 
+      - name: Typecheck shared packages
+        run: |
+          bun run --cwd packages/contracts lint
+          bun run --cwd packages/db lint
+          bun run --cwd packages/adapters lint
+          bun run --cwd packages/platform lint
+
       - name: Audit structured error boundaries
         run: |
           bun test scripts/audit-error-boundaries.test.ts
