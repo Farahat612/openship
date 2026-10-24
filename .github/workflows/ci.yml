@@ -162,6 +162,7 @@ jobs:
             command: |
               bunx turbo run test --filter=!@repo/api --filter=!@repo/db --filter=!@repo/sdk --filter=!@repo/cli --filter=!@repo/email --concurrency=1 --log-order=stream
               bun run test:scripts
+              bun run --cwd packages/adapters test:bun
     steps:
       - name: Checkout
         uses: actions/checkout@v7
