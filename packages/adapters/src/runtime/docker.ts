@@ -939,9 +939,44 @@ function stripDockerHeaders(buf: Buffer): string {
     .join("");
 }
 
-/** Strip a single Docker frame header from one streaming chunk. */
-function stripDockerChunkHeader(chunk: Buffer): Buffer {
-  return hasDockerFrameHeader(chunk) ? chunk.subarray(8) : chunk;
+/**
+ * Turn a followed `container.logs()` stream into text one chunk at a time. Several
+ * frames can share a network chunk and one frame can straddle chunks (header
+ * included), and a UTF-8 character can be cut anywhere, so the unfinished frame
+ * tail and the decoder state carry over between calls. Output whose first chunk
+ * is not framed (Tty:true) is decoded as raw text, like `splitDockerFrames`.
+ */
+function createDockerLogTextDecoder(): { write(chunk: Buffer): string; end(): string } {
+  const text = new StringDecoder("utf8");
+  let framed: boolean | undefined;
+  let pending: Buffer = Buffer.alloc(0);
+  return {
+    write(chunk) {
+      framed ??=
+        hasDockerFrameHeader(chunk) || (chunk.length < 8 && (chunk[0] === 1 || chunk[0] === 2));
+      if (!framed) return text.write(chunk);
+      pending = pending.length > 0 ? Buffer.concat([pending, chunk]) : chunk;
+      let out = "";
+      let offset = 0;
+      while (pending.length - offset >= 8) {
+        if (!hasDockerFrameHeader(pending, offset)) {
+          // Alignment is lost; show the rest as text rather than drop log output.
+          out += text.write(pending.subarray(offset));
+          offset = pending.length;
+          break;
+        }
+        const end = offset + 8 + pending.readUInt32BE(offset + 4);
+        if (end > pending.length) break;
+        out += text.write(pending.subarray(offset + 8, end));
+        offset = end;
+      }
+      pending = pending.subarray(offset);
+      return out;
+    },
+    end() {
+      return text.end();
+    },
+  };
 }
 
 /** Parse a Docker timestamp-prefixed log line into timestamp + message. */
@@ -5582,9 +5617,10 @@ OPENSHIP_BASES_PY`, { timeout: 5_000 });
     };
 
     let buffer = "";
+    const decoder = createDockerLogTextDecoder();
     stream.on("data", (chunk: Buffer) => {
       if (destroyed) return;
-      buffer += stripDockerChunkHeader(chunk).toString("utf-8");
+      buffer += decoder.write(chunk);
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
       for (const line of lines) {
@@ -5595,6 +5631,7 @@ OPENSHIP_BASES_PY`, { timeout: 5_000 });
     });
 
     stream.on("end", () => {
+      buffer += decoder.end();
       if (buffer && !destroyed) {
         onLog({
           timestamp: new Date().toISOString(),
