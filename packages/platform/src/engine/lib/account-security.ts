@@ -25,6 +25,7 @@ function isPrimarySignIn(path: string | undefined) {
   return (
     path.startsWith("/sign-in/") ||
     path.startsWith("/callback/") ||
+    path.startsWith("/oauth2/callback/") ||
     path === "/passkey/verify-authentication" ||
     path === "/verify-email" ||
     path === "/email-otp/verify-email"
@@ -105,6 +106,19 @@ export function accountSecurityPlugins(options: AccountSecurityOptions) {
                 return record && new Date(record.expiresAt).getTime() > Date.now() ? record : null;
               },
             };
+          }),
+        },
+        {
+          matcher: (ctx: { path?: string }) =>
+            !!ctx.path &&
+            (ctx.path.startsWith("/sign-in/oauth2") || ctx.path.startsWith("/oauth2/callback/")),
+          handler: createAuthMiddleware(async () => {
+            if ((await options.getAuthMode()) === "none") {
+              throw new APIError("FORBIDDEN", {
+                code: "OAUTH_DISABLED",
+                message: "OAuth sign-in is disabled on zero-auth instances.",
+              });
+            }
           }),
         },
         {

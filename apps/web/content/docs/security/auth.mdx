@@ -38,6 +38,43 @@ you never handle it yourself.
 The cookie name is prefixed with your instance mode — `openship.session_token` on a self-hosted install,
 `openship-cloud.session_token` on Openship Cloud.
 
+### OAuth and generic OIDC (SSO)
+
+Self-hosted instances can enable social login (GitHub, Google) or a generic OpenID Connect identity
+provider (Authentik, Keycloak, Okta, Microsoft Entra ID, Google Workspace) via environment variables:
+
+- **GitHub / Google:** `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET`, or `GOOGLE_CLIENT_ID` +
+  `GOOGLE_CLIENT_SECRET`.
+- **Generic OIDC:** `OIDC_ISSUER`, `OIDC_CLIENT_ID`, and `OIDC_CLIENT_SECRET` (all three required;
+  partial configuration is ignored with a boot warning), plus optional `OIDC_DISPLAY_NAME` for the
+  login button label (defaults to `"SSO"`). Openship discovers endpoints from
+  `${OIDC_ISSUER}/.well-known/openid-configuration` (a trailing slash on the issuer is ignored) and
+  requests `openid email profile`. The authorization request uses PKCE.
+
+Register this callback at the identity provider. It is the public origin plus `/api/auth/oauth2/callback/oidc`:
+
+```
+https://openship.example.com/api/auth/oauth2/callback/oidc
+```
+
+Locally, use `http://localhost:4000/api/auth/oauth2/callback/oidc`. When `OPENSHIP_PUBLIC_URL` is set,
+use that origin in place of `https://openship.example.com`.
+
+Account-linking and sign-up rules for OIDC:
+
+- **Verified email required for account linking:** Openship links an OIDC login to an existing user
+  with the same email only when the IdP returns `email_verified: true`. If `email_verified` is `false`
+  or omitted, Openship refuses to link to an existing account and does not mark the email verified.
+- **Invite-only sign-up stays enforced:** Self-hosted instances remain invite-only after the initial
+  admin is created. A new OIDC user must have a pending, unexpired invitation from an instance admin;
+  there is no automatic email-domain join.
+- **Zero-auth mode:** When `authMode` is `"none"`, the OIDC provider is not advertised, and
+  `POST /api/auth/sign-in/oauth2` plus `GET /api/auth/oauth2/callback/oidc` are rejected. GitHub and
+  Google stay unadvertised the same way they already are in that mode.
+- **Deprovisioning (v1 limitation):** Removing a user at the IdP blocks future OIDC sign-ins, but
+  there is no SCIM push and existing Openship sessions remain valid until they expire (30 days by
+  default) or an admin removes the member in Openship.
+
 ### Passkeys
 
 On Openship Cloud or a self-hosted instance with local accounts, open **Settings → Security → Passkeys**

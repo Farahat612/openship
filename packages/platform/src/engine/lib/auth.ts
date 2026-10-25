@@ -3,7 +3,7 @@ import { organizationOptions, isSaasDeployment } from "./organization-lifecycle"
 import { betterAuth, type User } from "better-auth";
 import { APIError } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { bearer, mcp, emailOTP } from "better-auth/plugins";
+import { bearer, mcp, emailOTP, genericOAuth } from "better-auth/plugins";
 import { organization } from "better-auth/plugins/organization";
 import { db, getDriver, repos, schema, and, eq, gt, sql } from "@repo/db";
 import { env, runtimeTarget, runtimeTargetId, trustedOrigins, localDashboardUrl } from "../config/env";
@@ -18,7 +18,7 @@ import {
   verifyOtpEmailTemplate,
 } from "./email-templates";
 import { provisionUser } from "./provision-user";
-import { socialProviderCredentials } from "./auth-providers";
+import { oidcProviderConfig, socialProviderCredentials } from "./auth-providers";
 import { isAuthorizedLocalSignup } from "./local-bootstrap";
 import { accountSecurityPlugins } from "./account-security";
 import { getAuthMode } from "./auth-mode";
@@ -84,6 +84,7 @@ const sharedCookieDomain = getSharedCookieDomain();
 const useSessionCookieCache = getDriver() !== "pglite";
 const githubOAuth = socialProviderCredentials("github");
 const googleOAuth = socialProviderCredentials("google");
+const oidcOAuth = oidcProviderConfig();
 
 export const auth = betterAuth({
   basePath: "/api/auth",
@@ -205,6 +206,8 @@ export const auth = betterAuth({
     accountLinking: {
       enabled: true,
       allowDifferentEmails: true,
+      // "oidc" is intentionally excluded from trustedProviders so Better Auth
+      // only links an existing user account when the IdP asserts email_verified=true.
       trustedProviders: ["github", "google"],
     },
   },
@@ -385,6 +388,11 @@ export const auth = betterAuth({
       dashboardUrl: env.OPENSHIP_PUBLIC_URL || localDashboardUrl,
       getAuthMode,
     }),
+
+    // Always mount the plugin so the plugins tuple stays concrete. A conditional
+    // spread widens it and drops organization fields such as activeOrganizationId.
+    // An empty config registers no provider; sign-in then reports provider not found.
+    genericOAuth({ config: oidcOAuth ? [oidcOAuth] : [] }),
 
     /**
      * Bearer auth — accepts `Authorization: Bearer <session.token>` as

@@ -276,6 +276,12 @@ const envSchema = z.object({
   GITHUB_DEVICE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
+  /** Generic OIDC issuer. Registered only together with client id and secret. */
+  OIDC_ISSUER: z.string().optional(),
+  OIDC_CLIENT_ID: z.string().optional(),
+  OIDC_CLIENT_SECRET: z.string().optional(),
+  /** Login button label. Defaults to "SSO" when the provider is registered. */
+  OIDC_DISPLAY_NAME: z.string().optional(),
 
   /* ---------- GitHub Auth Strategy ---------- */
   /**
@@ -767,6 +773,29 @@ if (env.OPENSHIP_ADVERTISED_ORIGIN) {
     throw new Error(
       `OPENSHIP_ADVERTISED_ORIGIN must use http or https (got "${parsed.protocol}" in "${raw}").`,
     );
+  }
+}
+
+// ─── OIDC_ISSUER validation ───────────────────────────────────────────────
+// Validate that OIDC_ISSUER, when provided, is a valid http(s) URL so discovery
+// requests to `${OIDC_ISSUER}/.well-known/openid-configuration` fail fast at boot.
+if (env.OIDC_ISSUER) {
+  const raw = env.OIDC_ISSUER.trim();
+  if (raw) {
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch (diagnosticFailure) {
+      observeCaughtError(diagnosticFailure, "platform/engine/config/env");
+      throw new Error(
+        `OIDC_ISSUER="${raw}" is not a valid absolute URL (expected e.g. https://idp.example.com).`,
+      );
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error(
+        `OIDC_ISSUER must use http or https (got "${parsed.protocol}" in "${raw}").`,
+      );
+    }
   }
 }
 

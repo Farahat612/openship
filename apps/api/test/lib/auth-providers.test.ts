@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const diagnosticsWarn = vi.hoisted(() => vi.fn());
+const reportCaught = vi.hoisted(() => vi.fn());
+
+vi.mock("@repo/core/diagnostics", () => ({
+  diagnostics: { warn: diagnosticsWarn, error: vi.fn() },
+  reportCaughtError: reportCaught,
+}));
+
 /**
  * Which social logins does this instance actually have credentials for?
  *
@@ -34,6 +42,9 @@ async function load() {
 
 afterEach(() => {
   for (const key of Object.keys(env)) delete env[key];
+  diagnosticsWarn.mockClear();
+  reportCaught.mockClear();
+  vi.unstubAllGlobals();
 });
 
 describe("configuredAuthProviders", () => {
@@ -72,11 +83,49 @@ describe("configuredAuthProviders", () => {
     expect(configuredAuthProviders().map((p) => p.id)).toEqual(["github", "google"]);
   });
 
+  it("advertises oidc with default display name when issuer, client id, and secret are all set", async () => {
+    env.OIDC_ISSUER = "https://idp.example.com";
+    env.OIDC_CLIENT_ID = "oidc-client";
+    env.OIDC_CLIENT_SECRET = "oidc-secret";
+
+    const { configuredAuthProviders } = await load();
+    expect(configuredAuthProviders()).toEqual([
+      { id: "oidc", kind: "oidc", name: "SSO" },
+    ]);
+  });
+
+  it("advertises oidc with custom OIDC_DISPLAY_NAME when configured", async () => {
+    env.OIDC_ISSUER = "https://idp.example.com";
+    env.OIDC_CLIENT_ID = "oidc-client";
+    env.OIDC_CLIENT_SECRET = "oidc-secret";
+    env.OIDC_DISPLAY_NAME = "  Authentik  ";
+
+    const { configuredAuthProviders } = await load();
+    expect(configuredAuthProviders()).toEqual([
+      { id: "oidc", kind: "oidc", name: "Authentik" },
+    ]);
+  });
+
+  it("omits oidc when only a partial set of OIDC env vars is configured", async () => {
+    env.OIDC_ISSUER = "https://idp.example.com";
+    env.OIDC_CLIENT_ID = "oidc-client";
+
+    const { configuredAuthProviders } = await load();
+    expect(configuredAuthProviders()).toEqual([]);
+    expect(diagnosticsWarn).toHaveBeenCalledWith(
+      "platform/engine/lib/auth-providers",
+      expect.stringContaining("OIDC_CLIENT_SECRET"),
+    );
+  });
+
   it("never puts a client id or secret in the advertised payload", async () => {
     env.GITHUB_CLIENT_ID = "Iv1.SECRET-CLIENT-ID";
     env.GITHUB_CLIENT_SECRET = "SECRET-CLIENT-SECRET";
     env.GOOGLE_CLIENT_ID = "google-SECRET-CLIENT-ID";
     env.GOOGLE_CLIENT_SECRET = "google-SECRET-CLIENT-SECRET";
+    env.OIDC_ISSUER = "https://idp.example.com/secret-tenant";
+    env.OIDC_CLIENT_ID = "oidc-SECRET-CLIENT-ID";
+    env.OIDC_CLIENT_SECRET = "oidc-SECRET-CLIENT-SECRET";
 
     const { configuredAuthProviders } = await load();
     const serialized = JSON.stringify(configuredAuthProviders());
@@ -84,9 +133,10 @@ describe("configuredAuthProviders", () => {
     for (const value of Object.values(env)) {
       expect(serialized).not.toContain(value);
     }
-    // Belt and braces: the only keys are the two documented ones, so a future
+    // Belt and braces: the only keys are the documented ones, so a future
     // field can't be added without a test author looking at this assertion.
     expect(Object.keys(configuredAuthProviders()[0]!).sort()).toEqual(["id", "kind"]);
+    expect(Object.keys(configuredAuthProviders()[2]!).sort()).toEqual(["id", "kind", "name"]);
   });
 });
 
@@ -101,5 +151,209 @@ describe("socialProviderCredentials", () => {
       clientSecret: "goog-secret",
     });
     expect(socialProviderCredentials("github")).toBeNull();
+  });
+});
+
+describe("oidcProviderConfig", () => {
+  it("registers oidc only when issuer, client id, and client secret are all present", async () => {
+    env.OIDC_ISSUER = "https://idp.example.com/application/o/openship/";
+    env.OIDC_CLIENT_ID = "oidc-client-id";
+    env.OIDC_CLIENT_SECRET = "oidc-client-secret";
+
+    const { oidcProviderConfig } = await load();
+    const config = oidcProviderConfig();
+    expect(config).toBeDefined();
+    expect(config).toMatchObject({
+      providerId: "oidc",
+      discoveryUrl: "https://idp.example.com/application/o/openship/.well-known/openid-configuration",
+      clientId: "oidc-client-id",
+      clientSecret: "oidc-client-secret",
+      scopes: ["openid", "email", "profile"],
+      pkce: true,
+      displayName: "SSO",
+    });
+    expect(typeof config?.getUserInfo).toBe("function");
+  });
+
+  it("registers nothing and warns once per distinct partial OIDC env", async () => {
+    const { oidcProviderConfig } = await load();
+
+    env.OIDC_DISPLAY_NAME = "Okta";
+    expect(oidcProviderConfig()).toBeUndefined();
+    expect(diagnosticsWarn).not.toHaveBeenCalled();
+
+    env.OIDC_ISSUER = "https://idp.example.com";
+    expect(oidcProviderConfig()).toBeUndefined();
+    expect(diagnosticsWarn).toHaveBeenCalledTimes(1);
+    expect(diagnosticsWarn.mock.calls[0]?.[1]).toContain("OIDC_CLIENT_ID");
+    expect(diagnosticsWarn.mock.calls[0]?.[1]).toContain("OIDC_CLIENT_SECRET");
+    oidcProviderConfig();
+    expect(diagnosticsWarn).toHaveBeenCalledTimes(1);
+
+    delete env.OIDC_ISSUER;
+    env.OIDC_CLIENT_ID = "only-id";
+    env.OIDC_CLIENT_SECRET = "only-secret";
+    expect(oidcProviderConfig()).toBeUndefined();
+    expect(diagnosticsWarn).toHaveBeenCalledTimes(2);
+    expect(diagnosticsWarn.mock.calls[1]?.[1]).toContain("OIDC_ISSUER");
+  });
+});
+
+describe("mapOidcProfileToUser", () => {
+  it("trusts email_verified only when it is boolean true", async () => {
+    const { mapOidcProfileToUser } = await load();
+
+    expect(mapOidcProfileToUser({
+      sub: "u1",
+      email: "alice@example.test",
+      name: "Alice",
+      email_verified: true,
+    })).toEqual({ name: "Alice", emailVerified: true });
+
+    expect(mapOidcProfileToUser({
+      email: "alice@example.test",
+      name: "Alice",
+      email_verified: false,
+      emailVerified: true,
+    })).toEqual({ name: "Alice", emailVerified: false });
+
+    expect(mapOidcProfileToUser({
+      email: "alice@example.test",
+      name: "Alice",
+      email_verified: "true",
+    })).toEqual({ name: "Alice", emailVerified: false });
+
+    expect(mapOidcProfileToUser({
+      email: "alice@example.test",
+      emailVerified: true,
+    })).toEqual({ name: "alice", emailVerified: true });
+
+    expect(mapOidcProfileToUser({
+      email: "alice@example.test",
+    })).toEqual({ name: "alice", emailVerified: false });
+  });
+});
+
+function unsignedJwt(payload: Record<string, unknown>): string {
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${encode({ alg: "none", typ: "JWT" })}.${encode(payload)}.`;
+}
+
+describe("oidc getUserInfo", () => {
+  it("returns only user columns from userinfo and does not trust a non-boolean email_verified", async () => {
+    env.OIDC_ISSUER = "https://idp.example.com/";
+    env.OIDC_CLIENT_ID = "oidc-client";
+    env.OIDC_CLIENT_SECRET = "oidc-secret";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://idp.example.com/.well-known/openid-configuration") {
+        return new Response(JSON.stringify({
+          userinfo_endpoint: "https://idp.example.com/userinfo",
+        }), { status: 200 });
+      }
+      if (url === "https://idp.example.com/userinfo") {
+        return new Response(JSON.stringify({
+          sub: "sub-1",
+          email: "ada@example.com",
+          email_verified: "true",
+          name: "Ada",
+          groups: ["admins"],
+          picture: "https://idp.example.com/ada.png",
+        }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { oidcProviderConfig } = await load();
+    const user = await oidcProviderConfig()?.getUserInfo?.({ accessToken: "token" });
+    expect(user).toEqual({
+      id: "sub-1",
+      email: "ada@example.com",
+      emailVerified: false,
+      name: "Ada",
+      image: "https://idp.example.com/ada.png",
+    });
+    expect(user).not.toHaveProperty("groups");
+    expect(user).not.toHaveProperty("email_verified");
+    expect(user).not.toHaveProperty("picture");
+  });
+
+  it("reads a boolean email_verified from the id token and does not call userinfo", async () => {
+    env.OIDC_ISSUER = "https://idp.example.com";
+    env.OIDC_CLIENT_ID = "oidc-client";
+    env.OIDC_CLIENT_SECRET = "oidc-secret";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { oidcProviderConfig } = await load();
+    const getUserInfo = oidcProviderConfig()?.getUserInfo;
+    const unverified = await getUserInfo?.({
+      idToken: unsignedJwt({
+        sub: "sub-2",
+        email: "ada@example.com",
+        email_verified: "true",
+        name: "Ada",
+        groups: ["admins"],
+      }),
+      accessToken: "should-not-fetch",
+    });
+    expect(unverified).toEqual({
+      id: "sub-2",
+      email: "ada@example.com",
+      emailVerified: false,
+      name: "Ada",
+    });
+
+    const verified = await getUserInfo?.({
+      idToken: unsignedJwt({
+        sub: "sub-3",
+        email: "ada@example.com",
+        email_verified: true,
+        preferred_username: "ada",
+        groups: ["admins"],
+      }),
+    });
+    expect(verified).toEqual({
+      id: "sub-3",
+      email: "ada@example.com",
+      emailVerified: true,
+      name: "ada",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("falls through to userinfo when the id token cannot be decoded", async () => {
+    env.OIDC_ISSUER = "https://idp.example.com";
+    env.OIDC_CLIENT_ID = "oidc-client";
+    env.OIDC_CLIENT_SECRET = "oidc-secret";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/.well-known/openid-configuration")) {
+        return new Response(JSON.stringify({
+          userinfo_endpoint: "https://idp.example.com/userinfo",
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        sub: "sub-4",
+        email: "ada@example.com",
+        email_verified: false,
+        name: "Ada",
+        groups: ["admins"],
+      }), { status: 200 });
+    }));
+
+    const { oidcProviderConfig } = await load();
+    const user = await oidcProviderConfig()?.getUserInfo?.({
+      idToken: "not-a-jwt",
+      accessToken: "token",
+    });
+    expect(user).toEqual({
+      id: "sub-4",
+      email: "ada@example.com",
+      emailVerified: false,
+      name: "Ada",
+    });
+    expect(reportCaught).toHaveBeenCalled();
   });
 });
