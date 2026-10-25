@@ -521,8 +521,13 @@ export async function resolveExecExitCode(exec: ExecInspectable, label?: string)
   return info.ExitCode;
 }
 
-function resolveRestartPolicy(policy?: string) {
-  return RESTART_POLICIES[policy ?? "always"] ?? RESTART_POLICIES.always;
+/** Map a restart policy, including Compose's `on-failure:<max-retries>` form, to
+ *  Docker's HostConfig shape. Exported for unit tests. */
+export function resolveRestartPolicy(policy?: string) {
+  const name = policy?.trim() ?? "always";
+  const retries = /^on-failure:(\d+)$/.exec(name);
+  if (retries) return { Name: "on-failure", MaximumRetryCount: Number(retries[1]) };
+  return RESTART_POLICIES[name] ?? RESTART_POLICIES.always;
 }
 
 /**
@@ -643,6 +648,18 @@ function normalizeInspectPorts(data: Dockerode.ContainerInspectInfo): DockerPort
  */
 const DEFAULT_EXTRA_PORT_HOST_IP = "127.0.0.1";
 
+/** One container port can be published on several host ports ("8080:80" and
+ *  "8081:80"), so bindings accumulate per key; an exact repeat is kept once. */
+function addPortBinding(
+  portBindings: Record<string, { HostIp?: string; HostPort: string }[]>,
+  key: string,
+  binding: { HostIp: string; HostPort: string },
+) {
+  const existing = (portBindings[key] ??= []);
+  if (!existing.some((b) => b.HostIp === binding.HostIp && b.HostPort === binding.HostPort))
+    existing.push(binding);
+}
+
 /** Parse port specs ("8080:3000", "3000", "127.0.0.1:8080:80") into Docker
  *  ExposedPorts + PortBindings. Exported for unit tests. */
 export function parsePortBindings(portSpecs: string[]): {
@@ -666,7 +683,7 @@ export function parsePortBindings(portSpecs: string[]): {
       // loopback (see DEFAULT_EXTRA_PORT_HOST_IP).
       const key = `${parts[0]}/${protocol}`;
       exposedPorts[key] = {};
-      portBindings[key] = [{ HostIp: DEFAULT_EXTRA_PORT_HOST_IP, HostPort: "" }];
+      addPortBinding(portBindings, key, { HostIp: DEFAULT_EXTRA_PORT_HOST_IP, HostPort: "" });
     } else {
       // [hostIp:]hostPort:containerPort. Parse from the RIGHT so both the
       // 2-part (hostPort:containerPort) and 3-part IP-scoped form
@@ -680,7 +697,10 @@ export function parsePortBindings(portSpecs: string[]): {
       // An explicit interface (including "0.0.0.0" to publish deliberately) is
       // preserved verbatim; only a spec with no pinned interface falls back to
       // loopback rather than Docker's all-interfaces default.
-      portBindings[key] = [{ HostIp: hostIp || DEFAULT_EXTRA_PORT_HOST_IP, HostPort: hostPort }];
+      addPortBinding(portBindings, key, {
+        HostIp: hostIp || DEFAULT_EXTRA_PORT_HOST_IP,
+        HostPort: hostPort,
+      });
     }
   }
   return { exposedPorts, portBindings };
