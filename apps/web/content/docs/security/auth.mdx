@@ -49,7 +49,11 @@ provider (Authentik, Keycloak, Okta, Microsoft Entra ID, Google Workspace) via e
   partial configuration is ignored with a boot warning), plus optional `OIDC_DISPLAY_NAME` for the
   login button label (defaults to `"SSO"`). Openship discovers endpoints from
   `${OIDC_ISSUER}/.well-known/openid-configuration` (a trailing slash on the issuer is ignored) and
-  requests `openid email profile`. The authorization request uses PKCE.
+  requests `openid email profile`. The authorization request uses PKCE. Openship verifies the ID
+  token against that issuer's JWKS (`jwks_uri`). The discovery document's `issuer` must match
+  `OIDC_ISSUER` (only a trailing slash is ignored). In production the issuer, discovery, token,
+  JWKS, and userinfo URLs must be `https`. `http` is allowed for `localhost`, `127.0.0.1`, and
+  `::1`, and for any host when `NODE_ENV` is not `production`.
 
 Register this callback at the identity provider. It is the public origin plus `/api/auth/oauth2/callback/oidc`:
 

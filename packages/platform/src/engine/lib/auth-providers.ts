@@ -1,9 +1,10 @@
-import type { OAuth2Tokens, OAuth2UserInfo } from "@better-auth/core/oauth2";
+import { validateAuthorizationCode, type OAuth2Tokens, type OAuth2UserInfo } from "@better-auth/core/oauth2";
 import type { GenericOAuthConfig } from "better-auth/plugins";
 import type { AdvertisedAuthProvider } from "@repo/contracts";
 import { diagnostics as errorDiagnostics, reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
-import { decodeJwt } from "jose";
+import { createRemoteJWKSet, decodeProtectedHeader, jwtVerify, type JWTPayload } from "jose";
 import { env } from "../config/env";
+import { oidcEndpointAllowed } from "./oidc-endpoint";
 
 const SOCIAL_AUTH_PROVIDERS = ["github", "google"] as const;
 type SocialAuthProviderId = (typeof SOCIAL_AUTH_PROVIDERS)[number];
@@ -94,15 +95,210 @@ function httpUrl(value: string): URL | null {
   }
 }
 
-function userFromIdToken(idToken: string): OAuth2UserInfo | null {
+/**
+ * OIDC Discovery 4 compares the configured issuer to `discovery.issuer` as
+ * the same string, except one trailing slash is not significant. No other
+ * normalization (case, scheme, host, path) is applied. Repeated trailing
+ * slashes are stripped the same way the discovery URL is built.
+ */
+function normalizeIssuer(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
+
+const ASYMMETRIC_ID_TOKEN_ALGS = [
+  "RS256", "RS384", "RS512",
+  "PS256", "PS384", "PS512",
+  "ES256", "ES384", "ES512",
+  "EdDSA",
+] as const;
+
+type RemoteJwks = ReturnType<typeof createRemoteJWKSet>;
+
+type OidcDiscoveryDocument = {
+  /** Exact `issuer` string from discovery. The ID token `iss` must match it. */
+  issuer: string;
+  jwksUri: string;
+  tokenEndpoint: string;
+  userinfoEndpoint: string | null;
+  algorithms: string[];
+};
+
+const discoveryByIssuer = new Map<string, OidcDiscoveryDocument>();
+const jwksByUri = new Map<string, RemoteJwks>();
+
+/** Drop process caches. Tests use this so one case cannot pin another's document. */
+export function clearOidcProviderCache(): void {
+  discoveryByIssuer.clear();
+  jwksByUri.clear();
+}
+
+function signingAlgorithms(document: Record<string, unknown>): string[] {
+  const advertised = document.id_token_signing_alg_values_supported;
+  const source = Array.isArray(advertised) ? advertised : ASYMMETRIC_ID_TOKEN_ALGS;
+  return source.filter((alg): alg is string =>
+    typeof alg === "string" &&
+    alg !== "none" &&
+    !alg.startsWith("HS") &&
+    (ASYMMETRIC_ID_TOKEN_ALGS as readonly string[]).includes(alg),
+  );
+}
+
+function allowedEndpoint(value: string): string | null {
+  const trimmed = value.trim();
+  const parsed = httpUrl(trimmed);
+  if (!parsed || !oidcEndpointAllowed(parsed, env.NODE_ENV)) return null;
+  return trimmed;
+}
+
+/**
+ * Fetch discovery once per configured issuer for this process.
+ * A failed or rejected document is not cached, so the next sign-in tries again.
+ * An accepted document stays for the process. Signing-key rotation is handled
+ * by the JWKS getter, which refetches `jwks_uri` on its own.
+ */
+async function loadOidcDiscovery(): Promise<OidcDiscoveryDocument | null> {
+  const configured = normalizeIssuer(env.OIDC_ISSUER ?? "");
+  if (!configured) return null;
+  const issuerUrl = httpUrl(configured);
+  const discoveryUrlValue = `${configured}/.well-known/openid-configuration`;
+  if (!issuerUrl || !oidcEndpointAllowed(issuerUrl, env.NODE_ENV)) return null;
+  if (!allowedEndpoint(discoveryUrlValue)) return null;
+  const cached = discoveryByIssuer.get(configured);
+  if (cached && cachedEndpointsAllowed(cached)) return cached;
+
+  const document = await readJson(new URL(discoveryUrlValue));
+  if (!document) return null;
+
+  const discoveredIssuer = typeof document.issuer === "string" ? document.issuer.trim() : "";
+  if (!discoveredIssuer || normalizeIssuer(discoveredIssuer) !== configured) return null;
+  if (!allowedEndpoint(discoveredIssuer)) return null;
+
+  const jwksUri = typeof document.jwks_uri === "string" ? allowedEndpoint(document.jwks_uri) : null;
+  const tokenEndpoint = typeof document.token_endpoint === "string"
+    ? allowedEndpoint(document.token_endpoint)
+    : null;
+  if (!jwksUri || !tokenEndpoint) return null;
+
+  let userinfoEndpoint: string | null = null;
+  if (typeof document.userinfo_endpoint === "string" && document.userinfo_endpoint.trim()) {
+    userinfoEndpoint = allowedEndpoint(document.userinfo_endpoint);
+    if (!userinfoEndpoint) return null;
+  }
+
+  const algorithms = signingAlgorithms(document);
+  if (algorithms.length === 0) return null;
+
+  const validated: OidcDiscoveryDocument = {
+    issuer: discoveredIssuer,
+    jwksUri,
+    tokenEndpoint,
+    userinfoEndpoint,
+    algorithms,
+  };
+  discoveryByIssuer.set(configured, validated);
+  return validated;
+}
+
+function cachedEndpointsAllowed(document: OidcDiscoveryDocument): boolean {
+  return Boolean(
+    allowedEndpoint(document.issuer) &&
+    allowedEndpoint(document.jwksUri) &&
+    allowedEndpoint(document.tokenEndpoint) &&
+    (document.userinfoEndpoint === null || allowedEndpoint(document.userinfoEndpoint)),
+  );
+}
+
+function jwksFor(jwksUri: string): RemoteJwks {
+  let jwks = jwksByUri.get(jwksUri);
+  if (!jwks) {
+    jwks = createRemoteJWKSet(new URL(jwksUri));
+    jwksByUri.set(jwksUri, jwks);
+  }
+  return jwks;
+}
+
+function subject(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+/**
+ * Nonce (OIDC Core 3.1.3.7 step 11, and the nonce parameter in 3.1.2.1).
+ *
+ * Better Auth 1.5 generic OAuth does not send or store a nonce.
+ * `@better-auth/core` `createAuthorizationURL` has no nonce argument.
+ * `POST /sign-in/oauth2` calls it with state, PKCE, scopes, and redirect only.
+ * The OAuth state record stores callbackURL, codeVerifier, errorURL,
+ * newUserURL, link, expiresAt, and requestSignUp (plus optional request
+ * `additionalData`). It does not store a nonce. `getUserInfo` is called with
+ * `OAuth2Tokens` only, so a nonce generated at sign-in cannot be compared here.
+ * `authorizationUrlParams` could add a query parameter, but nothing would
+ * round-trip the expected value into this callback. This code does not invent
+ * that storage.
+ *
+ * PKCE (`pkce: true`) plus the state cookie binds the authorization code to
+ * this browser session. Step 11 requires the nonce claim to be checked only
+ * when the client sent a nonce in the authentication request. This client does
+ * not send one, so an ID token that happens to carry a `nonce` claim is not
+ * rejected for that claim.
+ */
+function authorizedPartyAccepts(payload: JWTPayload, clientId: string): boolean {
+  const azp = (payload as { azp?: unknown }).azp;
+  if (azp !== undefined && azp !== clientId) return false;
+  if (Array.isArray(payload.aud) && payload.aud.length > 1 && azp !== clientId) return false;
+  return true;
+}
+
+async function verifyOidcIdToken(
+  idToken: string,
+  discovery: OidcDiscoveryDocument,
+  clientId: string,
+): Promise<JWTPayload | null> {
+  let headerAlg: string | undefined;
   try {
-    const claims = decodeJwt(idToken) as Record<string, unknown>;
-    if (!nonEmpty(claims.sub) || !nonEmpty(claims.email)) return null;
-    return toOidcUser(claims);
+    headerAlg = decodeProtectedHeader(idToken).alg;
   } catch (error) {
     observeCaughtError(error, AUTH_PROVIDERS_COMPONENT);
     return null;
   }
+  if (!headerAlg || !discovery.algorithms.includes(headerAlg)) return null;
+
+  try {
+    const { payload } = await jwtVerify(idToken, jwksFor(discovery.jwksUri), {
+      issuer: discovery.issuer,
+      audience: clientId,
+      algorithms: discovery.algorithms,
+      clockTolerance: 60,
+      requiredClaims: ["exp", "iat", "sub"],
+    });
+    if (!authorizedPartyAccepts(payload, clientId)) return null;
+    if (typeof payload.iat !== "number" || !subject(payload.sub)) return null;
+    return payload;
+  } catch (error) {
+    observeCaughtError(error, AUTH_PROVIDERS_COMPONENT);
+    return null;
+  }
+}
+
+/**
+ * Identity comes from the verified ID token. `email_verified` is taken only
+ * from that token (boolean true). Userinfo may add profile fields after its
+ * `sub` matches (OIDC Core 5.3.2). A mismatch rejects the login entirely.
+ */
+function profileFromVerifiedToken(
+  claims: JWTPayload,
+  userinfo: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  const token = claims as Record<string, unknown>;
+  if (userinfo && subject(userinfo.sub) !== subject(token.sub)) return null;
+  const email = nonEmpty(token.email) || (userinfo ? nonEmpty(userinfo.email) : "");
+  if (!subject(token.sub) || !email) return null;
+  return {
+    ...(userinfo ?? {}),
+    ...token,
+    sub: token.sub,
+    email,
+    email_verified: token.email_verified === true,
+  };
 }
 
 async function readJson(url: URL, init?: RequestInit): Promise<Record<string, unknown> | null> {
@@ -119,31 +315,56 @@ async function readJson(url: URL, init?: RequestInit): Promise<Record<string, un
 }
 
 /**
- * Prefer a usable id_token, then the discovery userinfo endpoint.
+ * Require a verified ID token. This provider always requests the `openid`
+ * scope, and OIDC Core 3.1.3.3 returns an id_token on the code flow. Userinfo
+ * is not a fallback identity: a missing or invalid id_token returns null.
+ * When userinfo is also returned, its `sub` must match the token (5.3.2).
  * The generic-oauth callback spreads this object into the user insert, so it
  * must not carry claims outside the user schema.
  */
 async function fetchOidcUserInfo(
   tokens: OAuth2Tokens,
-  discoveryUrl: string,
+  clientId: string,
 ): Promise<OAuth2UserInfo | null> {
-  if (tokens.idToken) {
-    const fromToken = userFromIdToken(tokens.idToken);
-    if (fromToken) return fromToken;
+  const discovery = await loadOidcDiscovery();
+  if (!discovery || !tokens.idToken) return null;
+  const claims = await verifyOidcIdToken(tokens.idToken, discovery, clientId);
+  if (!claims) return null;
+
+  let userinfo: Record<string, unknown> | null = null;
+  if (tokens.accessToken && discovery.userinfoEndpoint) {
+    const userinfoUrl = httpUrl(discovery.userinfoEndpoint);
+    if (!userinfoUrl) return null;
+    userinfo = await readJson(userinfoUrl, {
+      headers: { Authorization: `Bearer ${tokens.accessToken}` },
+    });
+    if (userinfo && subject(userinfo.sub) !== subject(claims.sub)) return null;
   }
-  if (!tokens.accessToken) return null;
-  const discovery = httpUrl(discoveryUrl);
-  if (!discovery) return null;
-  const document = await readJson(discovery);
-  const endpoint = document && typeof document.userinfo_endpoint === "string"
-    ? document.userinfo_endpoint
-    : "";
-  const userInfoUrl = endpoint ? httpUrl(endpoint) : null;
-  if (!userInfoUrl) return null;
-  const profile = await readJson(userInfoUrl, {
-    headers: { Authorization: `Bearer ${tokens.accessToken}` },
-  });
+
+  const profile = profileFromVerifiedToken(claims, userinfo);
   return profile ? toOidcUser(profile) : null;
+}
+
+async function exchangeOidcAuthorizationCode(
+  data: { code: string; redirectURI: string; codeVerifier?: string },
+  clientId: string,
+  clientSecret: string,
+): Promise<OAuth2Tokens> {
+  const discovery = await loadOidcDiscovery();
+  if (!discovery) {
+    errorDiagnostics.warn(
+      AUTH_PROVIDERS_COMPONENT,
+      "[auth] OIDC discovery rejected; refusing the token exchange.",
+    );
+    throw new Error("OIDC discovery rejected");
+  }
+  return validateAuthorizationCode({
+    code: data.code,
+    codeVerifier: data.codeVerifier,
+    redirectURI: data.redirectURI,
+    options: { clientId, clientSecret },
+    tokenEndpoint: discovery.tokenEndpoint,
+  });
 }
 
 /** Register generic OIDC only when issuer, client id, and secret are all set. */
@@ -170,7 +391,8 @@ export function oidcProviderConfig(): OidcProviderConfig | undefined {
     pkce: true,
     displayName: env.OIDC_DISPLAY_NAME?.trim() || DEFAULT_OIDC_DISPLAY_NAME,
     mapProfileToUser: mapOidcProfileToUser,
-    getUserInfo: (tokens) => fetchOidcUserInfo(tokens, discoveryUrl),
+    getToken: (data) => exchangeOidcAuthorizationCode(data, clientId, clientSecret),
+    getUserInfo: (tokens) => fetchOidcUserInfo(tokens, clientId),
   };
 }
 

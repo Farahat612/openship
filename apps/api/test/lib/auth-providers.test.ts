@@ -1,4 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  calculateJwkThumbprint,
+  exportJWK,
+  generateKeyPair,
+  SignJWT,
+  type CryptoKey,
+} from "jose";
+import { oidcEndpointAllowed } from "@repo/platform/engine/lib/oidc-endpoint";
 
 const diagnosticsWarn = vi.hoisted(() => vi.fn());
 const reportCaught = vi.hoisted(() => vi.fn());
@@ -173,6 +181,7 @@ describe("oidcProviderConfig", () => {
       displayName: "SSO",
     });
     expect(typeof config?.getUserInfo).toBe("function");
+    expect(typeof config?.getToken).toBe("function");
   });
 
   it("registers nothing and warns once per distinct partial OIDC env", async () => {
@@ -234,24 +243,100 @@ describe("mapOidcProfileToUser", () => {
   });
 });
 
-function unsignedJwt(payload: Record<string, unknown>): string {
-  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  return `${encode({ alg: "none", typ: "JWT" })}.${encode(payload)}.`;
-}
+describe("oidc endpoint scheme", () => {
+  it("requires https in production and still allows loopback http", () => {
+    expect(oidcEndpointAllowed(new URL("https://idp.example.com"), "production")).toBe(true);
+    expect(oidcEndpointAllowed(new URL("http://idp.example.com"), "production")).toBe(false);
+    expect(oidcEndpointAllowed(new URL("http://127.0.0.1.example.com"), "production")).toBe(false);
+    expect(oidcEndpointAllowed(new URL("http://127.0.0.1:8080/realms/openship"), "production")).toBe(true);
+    expect(oidcEndpointAllowed(new URL("http://localhost/realms/openship"), "production")).toBe(true);
+    expect(oidcEndpointAllowed(new URL("http://[::1]/realms/openship"), "production")).toBe(true);
+    expect(oidcEndpointAllowed(new URL("http://idp.example.com"), "test")).toBe(true);
+    expect(oidcEndpointAllowed(new URL("http://idp.example.com"), "development")).toBe(true);
+  });
+});
 
 describe("oidc getUserInfo", () => {
-  it("returns only user columns from userinfo and does not trust a non-boolean email_verified", async () => {
-    env.OIDC_ISSUER = "https://idp.example.com/";
+  const issuer = "https://idp.example.com";
+  const jwksUrl = "https://idp.example.com/jwks";
+  const userinfoUrl = "https://idp.example.com/userinfo";
+  let privateKey: CryptoKey;
+  let kid = "";
+  let publicJwk: Record<string, unknown>;
+
+  async function sign(claims: Record<string, unknown>, expiresIn = 600): Promise<string> {
+    const now = Math.floor(Date.now() / 1000);
+    return new SignJWT(claims)
+      .setProtectedHeader({ alg: "RS256", kid })
+      .setIssuer(issuer)
+      .setSubject(String(claims.sub))
+      .setAudience("oidc-client")
+      .setIssuedAt(now)
+      .setExpirationTime(now + expiresIn)
+      .sign(privateKey);
+  }
+
+  function discovery(extra: Record<string, unknown> = {}) {
+    return {
+      issuer,
+      jwks_uri: jwksUrl,
+      token_endpoint: "https://idp.example.com/token",
+      userinfo_endpoint: userinfoUrl,
+      id_token_signing_alg_values_supported: ["RS256", "none", "HS256"],
+      ...extra,
+    };
+  }
+
+  async function useIdp() {
+    env.OIDC_ISSUER = `${issuer}/`;
     env.OIDC_CLIENT_ID = "oidc-client";
     env.OIDC_CLIENT_SECRET = "oidc-secret";
+    env.NODE_ENV = "test";
+    const { publicKey, privateKey: key } = await generateKeyPair("RS256", { extractable: true });
+    privateKey = key;
+    const jwk = await exportJWK(publicKey);
+    kid = await calculateJwkThumbprint(jwk);
+    jwk.kid = kid;
+    jwk.alg = "RS256";
+    jwk.use = "sig";
+    publicJwk = jwk;
+  }
+
+  it("does not accept userinfo when the token response has no id_token", async () => {
+    await useIdp();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "https://idp.example.com/.well-known/openid-configuration") {
+      if (url.endsWith("/.well-known/openid-configuration")) {
+        return new Response(JSON.stringify(discovery()), { status: 200 });
+      }
+      if (url === userinfoUrl) {
         return new Response(JSON.stringify({
-          userinfo_endpoint: "https://idp.example.com/userinfo",
+          sub: "sub-1",
+          email: "ada@example.com",
+          email_verified: true,
+          name: "Ada",
+          groups: ["admins"],
         }), { status: 200 });
       }
-      if (url === "https://idp.example.com/userinfo") {
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { oidcProviderConfig } = await load();
+    const user = await oidcProviderConfig()?.getUserInfo?.({ accessToken: "token" });
+    expect(user).toBeNull();
+    expect(fetchMock.mock.calls.map((call) => String(call[0]))).not.toContain(userinfoUrl);
+  });
+
+  it("reads email_verified only from the verified id token and drops raw claims", async () => {
+    await useIdp();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/.well-known/openid-configuration")) {
+        return new Response(JSON.stringify(discovery()), { status: 200 });
+      }
+      if (url === jwksUrl) return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
+      if (url === userinfoUrl) {
         return new Response(JSON.stringify({
           sub: "sub-1",
           email: "ada@example.com",
@@ -266,52 +351,28 @@ describe("oidc getUserInfo", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { oidcProviderConfig } = await load();
-    const user = await oidcProviderConfig()?.getUserInfo?.({ accessToken: "token" });
-    expect(user).toEqual({
+    const getUserInfo = oidcProviderConfig()?.getUserInfo;
+    const unverified = await getUserInfo?.({
+      idToken: await sign({ sub: "sub-1", email: "ada@example.com", email_verified: "true", name: "Ada" }),
+      accessToken: "token",
+    });
+    expect(unverified).toEqual({
       id: "sub-1",
       email: "ada@example.com",
       emailVerified: false,
       name: "Ada",
       image: "https://idp.example.com/ada.png",
     });
-    expect(user).not.toHaveProperty("groups");
-    expect(user).not.toHaveProperty("email_verified");
-    expect(user).not.toHaveProperty("picture");
-  });
+    expect(unverified).not.toHaveProperty("groups");
+    expect(unverified).not.toHaveProperty("email_verified");
 
-  it("reads a boolean email_verified from the id token and does not call userinfo", async () => {
-    env.OIDC_ISSUER = "https://idp.example.com";
-    env.OIDC_CLIENT_ID = "oidc-client";
-    env.OIDC_CLIENT_SECRET = "oidc-secret";
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    const { oidcProviderConfig } = await load();
-    const getUserInfo = oidcProviderConfig()?.getUserInfo;
-    const unverified = await getUserInfo?.({
-      idToken: unsignedJwt({
-        sub: "sub-2",
-        email: "ada@example.com",
-        email_verified: "true",
-        name: "Ada",
-        groups: ["admins"],
-      }),
-      accessToken: "should-not-fetch",
-    });
-    expect(unverified).toEqual({
-      id: "sub-2",
-      email: "ada@example.com",
-      emailVerified: false,
-      name: "Ada",
-    });
-
+    fetchMock.mockClear();
     const verified = await getUserInfo?.({
-      idToken: unsignedJwt({
+      idToken: await sign({
         sub: "sub-3",
         email: "ada@example.com",
         email_verified: true,
         preferred_username: "ada",
-        groups: ["admins"],
       }),
     });
     expect(verified).toEqual({
@@ -320,40 +381,52 @@ describe("oidc getUserInfo", () => {
       emailVerified: true,
       name: "ada",
     });
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.map((call) => String(call[0]))).not.toContain(userinfoUrl);
   });
 
-  it("falls through to userinfo when the id token cannot be decoded", async () => {
-    env.OIDC_ISSUER = "https://idp.example.com";
-    env.OIDC_CLIENT_ID = "oidc-client";
-    env.OIDC_CLIENT_SECRET = "oidc-secret";
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+  it("does not fall back to userinfo when the id token cannot be verified", async () => {
+    await useIdp();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/.well-known/openid-configuration")) {
+        return new Response(JSON.stringify(discovery()), { status: 200 });
+      }
+      if (url === userinfoUrl) {
         return new Response(JSON.stringify({
-          userinfo_endpoint: "https://idp.example.com/userinfo",
+          sub: "sub-4",
+          email: "ada@example.com",
+          email_verified: true,
+          name: "Ada",
         }), { status: 200 });
       }
-      return new Response(JSON.stringify({
-        sub: "sub-4",
-        email: "ada@example.com",
-        email_verified: false,
-        name: "Ada",
-        groups: ["admins"],
-      }), { status: 200 });
-    }));
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     const { oidcProviderConfig } = await load();
     const user = await oidcProviderConfig()?.getUserInfo?.({
       idToken: "not-a-jwt",
       accessToken: "token",
     });
-    expect(user).toEqual({
-      id: "sub-4",
-      email: "ada@example.com",
-      emailVerified: false,
-      name: "Ada",
-    });
+    expect(user).toBeNull();
     expect(reportCaught).toHaveBeenCalled();
+    expect(fetchMock.mock.calls.map((call) => String(call[0]))).not.toContain(userinfoUrl);
+  });
+
+  it("refuses an http issuer in production before fetching discovery", async () => {
+    env.NODE_ENV = "production";
+    env.OIDC_ISSUER = "http://idp.example.com";
+    env.OIDC_CLIENT_ID = "oidc-client";
+    env.OIDC_CLIENT_SECRET = "oidc-secret";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { oidcProviderConfig } = await load();
+    const user = await oidcProviderConfig()?.getUserInfo?.({
+      idToken: "header.payload.sig",
+      accessToken: "token",
+    });
+    expect(user).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
