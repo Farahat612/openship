@@ -118,6 +118,7 @@ function createAuth() {
         database: connection.db,
         dashboardUrl: DASHBOARD,
         getAuthMode: async () => mode,
+        loadOidcDiscovery: async () => null,
       }),
       bearer(),
       emailOTP({

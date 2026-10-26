@@ -18,7 +18,7 @@ import {
   verifyOtpEmailTemplate,
 } from "./email-templates";
 import { provisionUser } from "./provision-user";
-import { oidcProviderConfig, socialProviderCredentials } from "./auth-providers";
+import { loadOidcDiscovery, oidcProviderConfig, socialProviderCredentials } from "./auth-providers";
 import { isAuthorizedLocalSignup } from "./local-bootstrap";
 import { accountSecurityPlugins } from "./account-security";
 import { getAuthMode } from "./auth-mode";
@@ -387,6 +387,7 @@ export const auth = betterAuth({
       // DB-discovered self-app domains construct URLs; they do not grant trust.
       dashboardUrl: env.OPENSHIP_PUBLIC_URL || localDashboardUrl,
       getAuthMode,
+      loadOidcDiscovery,
     }),
 
     // Always mount the plugin so the plugins tuple stays concrete. A conditional

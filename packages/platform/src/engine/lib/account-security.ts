@@ -19,6 +19,7 @@ interface AccountSecurityOptions {
   database: Database;
   dashboardUrl: string;
   getAuthMode: () => Promise<"none" | "local" | "cloud">;
+  loadOidcDiscovery: () => Promise<{ authorizationEndpoint: string } | null>;
 }
 
 /** Every primary sign-in that can issue a session in our Better Auth setup. */
@@ -127,8 +128,7 @@ export function accountSecurityPlugins(options: AccountSecurityOptions) {
           matcher: (ctx: { path?: string; body?: { providerId?: string } }) =>
             ctx.path === "/sign-in/oauth2" && ctx.body?.providerId === "oidc",
           handler: createAuthMiddleware(async (ctx) => {
-            const { loadOidcDiscovery } = await import("./auth-providers");
-            const discovery = await loadOidcDiscovery();
+            const discovery = await options.loadOidcDiscovery();
             if (!discovery) {
               throw new APIError("BAD_REQUEST", {
                 code: "OIDC_DISCOVERY_REJECTED",
