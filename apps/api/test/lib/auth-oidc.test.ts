@@ -48,6 +48,9 @@ const JWKS_URL = "https://idp.example.test/application/o/jwks";
 
 let idpUserInfo: Record<string, unknown> = {};
 let discoveryIssuer: string | null = null;
+let authorizationEndpoint: string | null = AUTHORIZATION_ENDPOINT;
+let subsequentAuthorizationEndpoint: string | null = null;
+let discoveryRequests = 0;
 let currentIdToken: string | null = null;
 let omitIdToken = false;
 let signingKey: CryptoKey;
@@ -90,6 +93,9 @@ beforeEach(async () => {
   env.NODE_ENV = initialNodeEnv;
   env.OIDC_ISSUER = initialIssuer;
   discoveryIssuer = null;
+  authorizationEndpoint = AUTHORIZATION_ENDPOINT;
+  subsequentAuthorizationEndpoint = null;
+  discoveryRequests = 0;
   currentIdToken = null;
   omitIdToken = false;
   clearOidcProviderCache();
@@ -108,7 +114,9 @@ beforeEach(async () => {
     if (url.includes("/.well-known/openid-configuration")) {
       return jsonResponse({
         issuer: discoveryIssuer ?? ISSUER,
-        authorization_endpoint: AUTHORIZATION_ENDPOINT,
+        authorization_endpoint: ++discoveryRequests > 1
+          ? subsequentAuthorizationEndpoint ?? authorizationEndpoint
+          : authorizationEndpoint,
         token_endpoint: TOKEN_ENDPOINT,
         userinfo_endpoint: USERINFO_ENDPOINT,
         jwks_uri: JWKS_URL,
@@ -246,8 +254,13 @@ async function completeOidcCallback(state: string, cookieHeader: string): Promis
 }
 
 /** A token that would link `email` if it were trusted. Rejection must not. */
-async function expectLoginRejected(email: string, userId: string): Promise<void> {
+async function expectLoginRejected(
+  email: string,
+  userId: string,
+  beforeCallback?: () => void,
+): Promise<void> {
   const { state, cookieHeader } = await startOidcSignIn();
+  beforeCallback?.();
   const callbackRes = await completeOidcCallback(state, cookieHeader);
   expect(callbackRes.status).toBe(302);
   const location = new URL(callbackRes.headers.get("location")!);
@@ -549,31 +562,83 @@ describe("OIDC generic-oauth integration", () => {
   it("rejects discovery whose issuer does not match OIDC_ISSUER through the callback", async () => {
     const email = "discovery-mismatch@example.test";
     await seedUser("user_discovery", email);
-    discoveryIssuer = "https://evil.example.test";
-    await presentIdp({
-      sub: "oidc-sub-discovery",
-      email,
-      email_verified: true,
-      name: "Discovery",
+    await presentIdp(
+      {
+        sub: "oidc-sub-discovery",
+        email,
+        email_verified: true,
+        name: "Discovery",
+      },
+      { iss: "https://evil.example.test" },
+    );
+    await expectLoginRejected(email, "user_discovery", () => {
+      discoveryIssuer = "https://evil.example.test";
+      clearOidcProviderCache();
     });
-    await expectLoginRejected(email, "user_discovery");
   });
 
   it("rejects an http issuer in production through the callback", async () => {
     const email = "http-issuer@example.test";
     await seedUser("user_http", email);
     const httpIssuer = "http://idp.example.test/application/o/openship/";
-    env.NODE_ENV = "production";
-    env.OIDC_ISSUER = httpIssuer;
-    discoveryIssuer = httpIssuer;
-    clearOidcProviderCache();
-    await presentIdp({
-      sub: "oidc-sub-http",
-      email,
-      email_verified: true,
-      name: "Http Issuer",
+    await presentIdp(
+      {
+        sub: "oidc-sub-http",
+        email,
+        email_verified: true,
+        name: "Http Issuer",
+      },
+      { iss: httpIssuer },
+    );
+    await expectLoginRejected(email, "user_http", () => {
+      env.NODE_ENV = "production";
+      env.OIDC_ISSUER = httpIssuer;
+      discoveryIssuer = httpIssuer;
+      clearOidcProviderCache();
     });
-    await expectLoginRejected(email, "user_http");
+  });
+
+  it.each([
+    ["http authorization endpoint in production", "http://idp.example.test/authorize", ISSUER],
+    ["missing authorization endpoint", null, ISSUER],
+    ["issuer mismatch", AUTHORIZATION_ENDPOINT, "https://evil.example.test"],
+    ["http issuer in production", AUTHORIZATION_ENDPOINT, "http://idp.example.test"],
+  ])("refuses sign-in for %s", async (_name, endpoint, issuer) => {
+    env.NODE_ENV = "production";
+    authorizationEndpoint = endpoint;
+    discoveryIssuer = issuer;
+    if (issuer.startsWith("http:")) env.OIDC_ISSUER = issuer;
+    const response = await auth.handler(new Request("http://localhost:4000/api/auth/sign-in/oauth2", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "oidc" }),
+    }));
+    expect(response.status).toBe(400);
+    expect(response.headers.get("location")).toBeNull();
+    expect(await response.json()).toMatchObject({ code: "OIDC_DISCOVERY_REJECTED" });
+  });
+
+  it("returns the validated authorization endpoint for valid discovery", async () => {
+    const { authorizationUrl } = await startOidcSignIn();
+    expect(`${authorizationUrl.origin}${authorizationUrl.pathname}`).toBe(AUTHORIZATION_ENDPOINT);
+    expect(authorizationUrl.searchParams.get("client_id")).toBe(CLIENT_ID);
+  });
+
+  it.each([
+    "http://evil.example.test/authorize",
+    "https://idp.example.test/other-authorize/",
+  ])("refuses a changed authorize URL from the second discovery fetch: %s", async (endpoint) => {
+    subsequentAuthorizationEndpoint = endpoint;
+    const response = await auth.handler(new Request("http://localhost:4000/api/auth/sign-in/oauth2", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "oidc" }),
+    }));
+    expect(response.status).toBe(400);
+    expect(response.headers.get("location")).toBeNull();
+    const body = await response.json();
+    expect(body).toMatchObject({ code: "OIDC_AUTHORIZATION_ENDPOINT_MISMATCH" });
+    expect(body).not.toHaveProperty("url");
   });
 
   it("does not accept userinfo as an identity when the token response has no id_token", async () => {

@@ -117,13 +117,15 @@ type RemoteJwks = ReturnType<typeof createRemoteJWKSet>;
 type OidcDiscoveryDocument = {
   /** Exact `issuer` string from discovery. The ID token `iss` must match it. */
   issuer: string;
+  authorizationEndpoint: string;
   jwksUri: string;
   tokenEndpoint: string;
   userinfoEndpoint: string | null;
   algorithms: string[];
 };
 
-const discoveryByIssuer = new Map<string, OidcDiscoveryDocument>();
+const OIDC_DISCOVERY_TTL_MS = 60 * 60 * 1000;
+const discoveryByIssuer = new Map<string, { document: OidcDiscoveryDocument; expiresAt: number }>();
 const jwksByUri = new Map<string, RemoteJwks>();
 
 /** Drop process caches. Tests use this so one case cannot pin another's document. */
@@ -150,13 +152,8 @@ function allowedEndpoint(value: string): string | null {
   return trimmed;
 }
 
-/**
- * Fetch discovery once per configured issuer for this process.
- * A failed or rejected document is not cached, so the next sign-in tries again.
- * An accepted document stays for the process. Signing-key rotation is handled
- * by the JWKS getter, which refetches `jwks_uri` on its own.
- */
-async function loadOidcDiscovery(): Promise<OidcDiscoveryDocument | null> {
+/** Accepted discovery expires after one hour. Rejected refreshes fail closed. */
+export async function loadOidcDiscovery(): Promise<OidcDiscoveryDocument | null> {
   const configured = normalizeIssuer(env.OIDC_ISSUER ?? "");
   if (!configured) return null;
   const issuerUrl = httpUrl(configured);
@@ -164,7 +161,10 @@ async function loadOidcDiscovery(): Promise<OidcDiscoveryDocument | null> {
   if (!issuerUrl || !oidcEndpointAllowed(issuerUrl, env.NODE_ENV)) return null;
   if (!allowedEndpoint(discoveryUrlValue)) return null;
   const cached = discoveryByIssuer.get(configured);
-  if (cached && cachedEndpointsAllowed(cached)) return cached;
+  if (cached && Date.now() < cached.expiresAt && cachedEndpointsAllowed(cached.document)) {
+    return cached.document;
+  }
+  discoveryByIssuer.delete(configured);
 
   const document = await readJson(new URL(discoveryUrlValue));
   if (!document) return null;
@@ -177,7 +177,10 @@ async function loadOidcDiscovery(): Promise<OidcDiscoveryDocument | null> {
   const tokenEndpoint = typeof document.token_endpoint === "string"
     ? allowedEndpoint(document.token_endpoint)
     : null;
-  if (!jwksUri || !tokenEndpoint) return null;
+  const authorizationEndpoint = typeof document.authorization_endpoint === "string"
+    ? allowedEndpoint(document.authorization_endpoint)
+    : null;
+  if (!jwksUri || !tokenEndpoint || !authorizationEndpoint) return null;
 
   let userinfoEndpoint: string | null = null;
   if (typeof document.userinfo_endpoint === "string" && document.userinfo_endpoint.trim()) {
@@ -190,18 +193,23 @@ async function loadOidcDiscovery(): Promise<OidcDiscoveryDocument | null> {
 
   const validated: OidcDiscoveryDocument = {
     issuer: discoveredIssuer,
+    authorizationEndpoint,
     jwksUri,
     tokenEndpoint,
     userinfoEndpoint,
     algorithms,
   };
-  discoveryByIssuer.set(configured, validated);
+  discoveryByIssuer.set(configured, {
+    document: validated,
+    expiresAt: Date.now() + OIDC_DISCOVERY_TTL_MS,
+  });
   return validated;
 }
 
 function cachedEndpointsAllowed(document: OidcDiscoveryDocument): boolean {
   return Boolean(
     allowedEndpoint(document.issuer) &&
+    allowedEndpoint(document.authorizationEndpoint) &&
     allowedEndpoint(document.jwksUri) &&
     allowedEndpoint(document.tokenEndpoint) &&
     (document.userinfoEndpoint === null || allowedEndpoint(document.userinfoEndpoint)),

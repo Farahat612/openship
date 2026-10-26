@@ -53,6 +53,7 @@ afterEach(() => {
   diagnosticsWarn.mockClear();
   reportCaught.mockClear();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("configuredAuthProviders", () => {
@@ -280,6 +281,7 @@ describe("oidc getUserInfo", () => {
     return {
       issuer,
       jwks_uri: jwksUrl,
+      authorization_endpoint: "https://idp.example.com/authorize",
       token_endpoint: "https://idp.example.com/token",
       userinfo_endpoint: userinfoUrl,
       id_token_signing_alg_values_supported: ["RS256", "none", "HS256"],
@@ -411,6 +413,51 @@ describe("oidc getUserInfo", () => {
     expect(user).toBeNull();
     expect(reportCaught).toHaveBeenCalled();
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).not.toContain(userinfoUrl);
+  });
+
+  it("refreshes discovery after one hour and verifies with the rotated jwks_uri", async () => {
+    await useIdp();
+    const now = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
+    const rotatedJwksUrl = "https://idp.example.com/rotated-jwks";
+    let discoveryRequests = 0;
+    let rejected = false;
+    const fetchedJwks: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/.well-known/openid-configuration")) {
+        discoveryRequests++;
+        return new Response(JSON.stringify(discovery({
+          jwks_uri: discoveryRequests === 1 ? jwksUrl : rotatedJwksUrl,
+        })), { status: rejected ? 503 : 200 });
+      }
+      if (url === jwksUrl || url === rotatedJwksUrl) {
+        fetchedJwks.push(url);
+        return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+    const { oidcProviderConfig } = await load();
+    const getUserInfo = oidcProviderConfig()!.getUserInfo!;
+    const tokens = async () => ({ idToken: await sign({ sub: "sub-ttl", email: "ada@example.com" }) });
+    expect(await getUserInfo(await tokens())).toMatchObject({ id: "sub-ttl" });
+    vi.setSystemTime(now + 3_600_000 - 1);
+    expect(await getUserInfo(await tokens())).toMatchObject({ id: "sub-ttl" });
+    expect(discoveryRequests).toBe(1);
+    vi.setSystemTime(now + 3_600_000);
+    expect(await getUserInfo(await tokens())).toMatchObject({ id: "sub-ttl" });
+    expect(discoveryRequests).toBe(2);
+    expect(fetchedJwks).toContain(rotatedJwksUrl);
+
+    rejected = true;
+    vi.setSystemTime(now + 7_200_000);
+    expect(await getUserInfo(await tokens())).toBeNull();
+    expect(await getUserInfo(await tokens())).toBeNull();
+    expect(discoveryRequests).toBe(4);
+    rejected = false;
+    expect(await getUserInfo(await tokens())).toMatchObject({ id: "sub-ttl" });
+    expect(discoveryRequests).toBe(5);
   });
 
   it("refuses an http issuer in production before fetching discovery", async () => {

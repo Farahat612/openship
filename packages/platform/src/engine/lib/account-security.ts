@@ -13,6 +13,8 @@ import { resolvePasskeyConfig } from "./passkey-config";
 import { atomicSecurityEndpoint } from "./account-security-transaction";
 import type { Database } from "@repo/db/factory";
 
+type OidcSignInContext = { oidcAuthorizationEndpoint?: string };
+
 interface AccountSecurityOptions {
   database: Database;
   dashboardUrl: string;
@@ -122,6 +124,22 @@ export function accountSecurityPlugins(options: AccountSecurityOptions) {
           }),
         },
         {
+          matcher: (ctx: { path?: string; body?: { providerId?: string } }) =>
+            ctx.path === "/sign-in/oauth2" && ctx.body?.providerId === "oidc",
+          handler: createAuthMiddleware(async (ctx) => {
+            const { loadOidcDiscovery } = await import("./auth-providers");
+            const discovery = await loadOidcDiscovery();
+            if (!discovery) {
+              throw new APIError("BAD_REQUEST", {
+                code: "OIDC_DISCOVERY_REJECTED",
+                message: "OIDC discovery is missing or invalid; refusing sign-in.",
+              });
+            }
+            (ctx.context as typeof ctx.context & OidcSignInContext).oidcAuthorizationEndpoint =
+              discovery.authorizationEndpoint;
+          }),
+        },
+        {
           matcher: (ctx: { path?: string }) =>
             !!ctx.path &&
             (ctx.path.startsWith("/passkey/") ||
@@ -175,6 +193,27 @@ export function accountSecurityPlugins(options: AccountSecurityOptions) {
         },
       ],
       after: [
+        {
+          matcher: (ctx: { path?: string; body?: { providerId?: string } }) =>
+            ctx.path === "/sign-in/oauth2" && ctx.body?.providerId === "oidc",
+          handler: createAuthMiddleware(async (ctx) => {
+            const body = ctx.context.returned;
+            if (!body || typeof body !== "object" || body instanceof Error || !("url" in body)) return;
+            const endpoint = (ctx.context as typeof ctx.context & OidcSignInContext)
+              .oidcAuthorizationEndpoint;
+            const actual = typeof body.url === "string" ? URL.parse(body.url) : null;
+            const expected = endpoint ? URL.parse(endpoint) : null;
+            // Generic OAuth fetches discovery again. Pin its output to the
+            // endpoint validated for this request before returning any URL.
+            if (!actual || !expected || actual.origin !== expected.origin || actual.pathname !== expected.pathname) {
+              ctx.context.responseHeaders?.delete("location");
+              throw new APIError("BAD_REQUEST", {
+                code: "OIDC_AUTHORIZATION_ENDPOINT_MISMATCH",
+                message: "OIDC authorization URL does not match validated discovery; refusing sign-in.",
+              });
+            }
+          }),
+        },
         {
           matcher: (ctx: { path?: string }) => isPrimarySignIn(ctx.path),
           handler: createAuthMiddleware(async (ctx) => {
