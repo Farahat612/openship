@@ -1,8 +1,7 @@
-import type { OAuth2Tokens, OAuth2UserInfo } from "@better-auth/core/oauth2";
-import type { GenericOAuthConfig } from "better-auth/plugins";
+import type { OAuth2UserInfo } from "@better-auth/core/oauth2";
 import type { AdvertisedAuthProvider } from "@repo/contracts";
 import { diagnostics as errorDiagnostics, reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
-import { decodeJwt } from "jose";
+import { createOidcProvider } from "./oidc";
 import { env } from "../config/env";
 
 const SOCIAL_AUTH_PROVIDERS = ["github", "google"] as const;
@@ -11,7 +10,7 @@ type SocialAuthProviderId = (typeof SOCIAL_AUTH_PROVIDERS)[number];
 export const DEFAULT_OIDC_DISPLAY_NAME = "SSO";
 const AUTH_PROVIDERS_COMPONENT = "platform/engine/lib/auth-providers";
 
-export type OidcProviderConfig = GenericOAuthConfig & {
+export type OidcProviderConfig = ReturnType<typeof createOidcProvider> & {
   providerId: "oidc";
   displayName: string;
 };
@@ -24,10 +23,7 @@ export function mapOidcProfileToUser(profile: Record<string, unknown>): {
   emailVerified: boolean;
   name?: string;
 } {
-  const emailVerified =
-    "email_verified" in profile
-      ? profile.email_verified === true
-      : profile.emailVerified === true;
+  const emailVerified = profile.email_verified === true;
   const rawName = typeof profile.name === "string" ? profile.name.trim() : "";
   const preferredUsername =
     typeof profile.preferred_username === "string" ? profile.preferred_username.trim() : "";
@@ -70,7 +66,7 @@ function nonEmpty(value: unknown): string {
 
 /** User-table fields only. Raw claims such as `sub` or `groups` are not columns. */
 function toOidcUser(profile: Record<string, unknown>): OAuth2UserInfo | null {
-  const id = nonEmpty(profile.sub) || nonEmpty(profile.id);
+  const id = nonEmpty(profile.sub);
   const email = nonEmpty(profile.email);
   if (!id || !email) return null;
   const mapped = mapOidcProfileToUser(profile);
@@ -82,68 +78,6 @@ function toOidcUser(profile: Record<string, unknown>): OAuth2UserInfo | null {
     ...(mapped.name ? { name: mapped.name } : {}),
     ...(image ? { image } : {}),
   };
-}
-
-function httpUrl(value: string): URL | null {
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function userFromIdToken(idToken: string): OAuth2UserInfo | null {
-  try {
-    const claims = decodeJwt(idToken) as Record<string, unknown>;
-    if (!nonEmpty(claims.sub) || !nonEmpty(claims.email)) return null;
-    return toOidcUser(claims);
-  } catch (error) {
-    observeCaughtError(error, AUTH_PROVIDERS_COMPONENT);
-    return null;
-  }
-}
-
-async function readJson(url: URL, init?: RequestInit): Promise<Record<string, unknown> | null> {
-  try {
-    const response = await fetch(url, init);
-    if (!response.ok) return null;
-    const body: unknown = await response.json();
-    if (!body || typeof body !== "object" || Array.isArray(body)) return null;
-    return body as Record<string, unknown>;
-  } catch (error) {
-    observeCaughtError(error, AUTH_PROVIDERS_COMPONENT);
-    return null;
-  }
-}
-
-/**
- * Prefer a usable id_token, then the discovery userinfo endpoint.
- * The generic-oauth callback spreads this object into the user insert, so it
- * must not carry claims outside the user schema.
- */
-async function fetchOidcUserInfo(
-  tokens: OAuth2Tokens,
-  discoveryUrl: string,
-): Promise<OAuth2UserInfo | null> {
-  if (tokens.idToken) {
-    const fromToken = userFromIdToken(tokens.idToken);
-    if (fromToken) return fromToken;
-  }
-  if (!tokens.accessToken) return null;
-  const discovery = httpUrl(discoveryUrl);
-  if (!discovery) return null;
-  const document = await readJson(discovery);
-  const endpoint = document && typeof document.userinfo_endpoint === "string"
-    ? document.userinfo_endpoint
-    : "";
-  const userInfoUrl = endpoint ? httpUrl(endpoint) : null;
-  if (!userInfoUrl) return null;
-  const profile = await readJson(userInfoUrl, {
-    headers: { Authorization: `Bearer ${tokens.accessToken}` },
-  });
-  return profile ? toOidcUser(profile) : null;
 }
 
 /** Register generic OIDC only when issuer, client id, and secret are all set. */
@@ -160,18 +94,16 @@ export function oidcProviderConfig(): OidcProviderConfig | undefined {
     warnPartialOidc(missing);
     return undefined;
   }
-  const discoveryUrl = `${issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`;
-  return {
-    providerId: "oidc",
-    discoveryUrl,
-    clientId,
-    clientSecret,
-    scopes: ["openid", "email", "profile"],
-    pkce: true,
-    displayName: env.OIDC_DISPLAY_NAME?.trim() || DEFAULT_OIDC_DISPLAY_NAME,
-    mapProfileToUser: mapOidcProfileToUser,
-    getUserInfo: (tokens) => fetchOidcUserInfo(tokens, discoveryUrl),
-  };
+  try {
+    return {
+      ...createOidcProvider({ issuer, clientId, clientSecret, allowLoopbackHttp: env.NODE_ENV !== "production" }, toOidcUser),
+      providerId: "oidc",
+      displayName: env.OIDC_DISPLAY_NAME?.trim() || DEFAULT_OIDC_DISPLAY_NAME,
+    };
+  } catch (error) {
+    observeCaughtError(error, AUTH_PROVIDERS_COMPONENT);
+    return undefined;
+  }
 }
 
 /** Public response: IDs and kinds only; never return the registration credentials. */

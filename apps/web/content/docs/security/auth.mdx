@@ -48,8 +48,16 @@ provider (Authentik, Keycloak, Okta, Microsoft Entra ID, Google Workspace) via e
 - **Generic OIDC:** `OIDC_ISSUER`, `OIDC_CLIENT_ID`, and `OIDC_CLIENT_SECRET` (all three required;
   partial configuration is ignored with a boot warning), plus optional `OIDC_DISPLAY_NAME` for the
   login button label (defaults to `"SSO"`). Openship discovers endpoints from
-  `${OIDC_ISSUER}/.well-known/openid-configuration` (a trailing slash on the issuer is ignored) and
-  requests `openid email profile`. The authorization request uses PKCE.
+  `${OIDC_ISSUER}/.well-known/openid-configuration` (a trailing slash is removed only when constructing the discovery URL) and
+  requests `openid email profile`. The authorization request uses PKCE and a nonce tied to the
+  same single-use sign-in state. Discovery must report the exact configured issuer. Production
+  issuers and endpoints must use HTTPS; local development permits HTTP only on loopback.
+  Redirects from discovery, token, key and UserInfo endpoints are refused.
+
+ID tokens must have a valid asymmetric signature from the issuer’s JWKS, the correct issuer and
+client audience, valid expiry and issuance times, and the matching nonce. Multiple audiences require
+a matching authorized party (`azp`). If profile claims come from UserInfo, its subject must match the
+verified ID token. Missing or invalid ID tokens fail sign-in; an access token alone is not accepted.
 
 Register this callback at the identity provider. It is the public origin plus `/api/auth/oauth2/callback/oidc`:
 

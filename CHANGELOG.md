@@ -6,6 +6,11 @@ Runtime security notices use the signed feed published from `security-advisories
 
 ## Unreleased
 
+- **Support verified OIDC sign-in** — discover a configured identity provider and
+  verify signed ID tokens, issuer, audience, expiry and sign-in nonce before
+  creating sessions. Preserve invitation and two-factor checks, require matching
+  UserInfo subjects, and refuse insecure or redirected provider endpoints (#1489).
+
 - **OpenShip Earn** — explain the Cloud affiliate program at `/affiliates`, with
   an interactive commission split, monthly and annual reward timing, payout
   guidance, and a dedicated social preview. Label the dashboard affiliate entry

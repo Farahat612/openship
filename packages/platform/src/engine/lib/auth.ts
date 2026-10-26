@@ -3,7 +3,7 @@ import { organizationOptions, isSaasDeployment } from "./organization-lifecycle"
 import { betterAuth, type User } from "better-auth";
 import { APIError } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { bearer, mcp, emailOTP, genericOAuth } from "better-auth/plugins";
+import { bearer, mcp, emailOTP } from "better-auth/plugins";
 import { organization } from "better-auth/plugins/organization";
 import { db, getDriver, repos, schema, and, eq, gt, sql } from "@repo/db";
 import { env, runtimeTarget, runtimeTargetId, trustedOrigins, localDashboardUrl } from "../config/env";
@@ -18,6 +18,7 @@ import {
   verifyOtpEmailTemplate,
 } from "./email-templates";
 import { provisionUser } from "./provision-user";
+import { oidcOAuthPlugin } from "./oidc";
 import { oidcProviderConfig, socialProviderCredentials } from "./auth-providers";
 import { isAuthorizedLocalSignup } from "./local-bootstrap";
 import { accountSecurityPlugins } from "./account-security";
@@ -392,7 +393,7 @@ export const auth = betterAuth({
     // Always mount the plugin so the plugins tuple stays concrete. A conditional
     // spread widens it and drops organization fields such as activeOrganizationId.
     // An empty config registers no provider; sign-in then reports provider not found.
-    genericOAuth({ config: oidcOAuth ? [oidcOAuth] : [] }),
+    oidcOAuthPlugin(oidcOAuth),
 
     /**
      * Bearer auth — accepts `Authorization: Bearer <session.token>` as

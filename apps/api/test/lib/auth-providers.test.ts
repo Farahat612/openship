@@ -165,7 +165,7 @@ describe("oidcProviderConfig", () => {
     expect(config).toBeDefined();
     expect(config).toMatchObject({
       providerId: "oidc",
-      discoveryUrl: "https://idp.example.com/application/o/openship/.well-known/openid-configuration",
+      issuer: "https://idp.example.com/application/o/openship/",
       clientId: "oidc-client-id",
       clientSecret: "oidc-client-secret",
       scopes: ["openid", "email", "profile"],
@@ -226,7 +226,7 @@ describe("mapOidcProfileToUser", () => {
     expect(mapOidcProfileToUser({
       email: "alice@example.test",
       emailVerified: true,
-    })).toEqual({ name: "alice", emailVerified: true });
+    })).toEqual({ name: "alice", emailVerified: false });
 
     expect(mapOidcProfileToUser({
       email: "alice@example.test",
@@ -239,121 +239,19 @@ function unsignedJwt(payload: Record<string, unknown>): string {
   return `${encode({ alg: "none", typ: "JWT" })}.${encode(payload)}.`;
 }
 
-describe("oidc getUserInfo", () => {
-  it("returns only user columns from userinfo and does not trust a non-boolean email_verified", async () => {
-    env.OIDC_ISSUER = "https://idp.example.com/";
-    env.OIDC_CLIENT_ID = "oidc-client";
-    env.OIDC_CLIENT_SECRET = "oidc-secret";
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url === "https://idp.example.com/.well-known/openid-configuration") {
-        return new Response(JSON.stringify({
-          userinfo_endpoint: "https://idp.example.com/userinfo",
-        }), { status: 200 });
-      }
-      if (url === "https://idp.example.com/userinfo") {
-        return new Response(JSON.stringify({
-          sub: "sub-1",
-          email: "ada@example.com",
-          email_verified: "true",
-          name: "Ada",
-          groups: ["admins"],
-          picture: "https://idp.example.com/ada.png",
-        }), { status: 200 });
-      }
-      throw new Error(`unexpected fetch ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
+describe("OIDC configuration and untrusted identities", () => {
+  it.each(["http://idp.example.com", "http://127.0.0.1:3000", "https://user:password@idp.example.com", "https://idp.example.com/#fragment", "https://idp.example.com/?tenant=other"])("does not register an unsafe issuer: %s", async (issuer) => {
+    Object.assign(env, { OIDC_ISSUER: issuer, OIDC_CLIENT_ID: "client", OIDC_CLIENT_SECRET: "secret", NODE_ENV: "production" });
     const { oidcProviderConfig } = await load();
-    const user = await oidcProviderConfig()?.getUserInfo?.({ accessToken: "token" });
-    expect(user).toEqual({
-      id: "sub-1",
-      email: "ada@example.com",
-      emailVerified: false,
-      name: "Ada",
-      image: "https://idp.example.com/ada.png",
-    });
-    expect(user).not.toHaveProperty("groups");
-    expect(user).not.toHaveProperty("email_verified");
-    expect(user).not.toHaveProperty("picture");
+    expect(oidcProviderConfig()).toBeUndefined();
   });
 
-  it("reads a boolean email_verified from the id token and does not call userinfo", async () => {
-    env.OIDC_ISSUER = "https://idp.example.com";
-    env.OIDC_CLIENT_ID = "oidc-client";
-    env.OIDC_CLIENT_SECRET = "oidc-secret";
+  it.each([undefined, "not-a-jwt", unsignedJwt({ sub: "u", email: "admin@example.com", email_verified: true })])("does not accept tokens outside a validated OAuth callback", async (idToken) => {
+    Object.assign(env, { OIDC_ISSUER: "https://idp.example.com", OIDC_CLIENT_ID: "client", OIDC_CLIENT_SECRET: "secret" });
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-
     const { oidcProviderConfig } = await load();
-    const getUserInfo = oidcProviderConfig()?.getUserInfo;
-    const unverified = await getUserInfo?.({
-      idToken: unsignedJwt({
-        sub: "sub-2",
-        email: "ada@example.com",
-        email_verified: "true",
-        name: "Ada",
-        groups: ["admins"],
-      }),
-      accessToken: "should-not-fetch",
-    });
-    expect(unverified).toEqual({
-      id: "sub-2",
-      email: "ada@example.com",
-      emailVerified: false,
-      name: "Ada",
-    });
-
-    const verified = await getUserInfo?.({
-      idToken: unsignedJwt({
-        sub: "sub-3",
-        email: "ada@example.com",
-        email_verified: true,
-        preferred_username: "ada",
-        groups: ["admins"],
-      }),
-    });
-    expect(verified).toEqual({
-      id: "sub-3",
-      email: "ada@example.com",
-      emailVerified: true,
-      name: "ada",
-    });
+    expect(await oidcProviderConfig()!.getUserInfo!({ idToken, accessToken: "token" })).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("falls through to userinfo when the id token cannot be decoded", async () => {
-    env.OIDC_ISSUER = "https://idp.example.com";
-    env.OIDC_CLIENT_ID = "oidc-client";
-    env.OIDC_CLIENT_SECRET = "oidc-secret";
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.endsWith("/.well-known/openid-configuration")) {
-        return new Response(JSON.stringify({
-          userinfo_endpoint: "https://idp.example.com/userinfo",
-        }), { status: 200 });
-      }
-      return new Response(JSON.stringify({
-        sub: "sub-4",
-        email: "ada@example.com",
-        email_verified: false,
-        name: "Ada",
-        groups: ["admins"],
-      }), { status: 200 });
-    }));
-
-    const { oidcProviderConfig } = await load();
-    const user = await oidcProviderConfig()?.getUserInfo?.({
-      idToken: "not-a-jwt",
-      accessToken: "token",
-    });
-    expect(user).toEqual({
-      id: "sub-4",
-      email: "ada@example.com",
-      emailVerified: false,
-      name: "Ada",
-    });
-    expect(reportCaught).toHaveBeenCalled();
   });
 });
