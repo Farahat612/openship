@@ -1,3 +1,4 @@
+import { oidcEndpointAllowed } from "./oidc-endpoint";
 import { createHash } from "node:crypto";
 import {
   authorizationCodeRequest,
@@ -23,18 +24,9 @@ const SIGNING_ALGORITHMS = [
   "EdDSA",
 ];
 
-/** HTTP is only allowed for a loopback IdP during local development/testing. */
-export function oidcUrl(value: string, allowLoopbackHttp: boolean): URL {
+function oidcUrl(value: string, nodeEnv: string): URL {
   const url = new URL(value);
-  const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-  if (
-    url.username ||
-    url.password ||
-    url.hash ||
-    (url.protocol !== "https:" && !(allowLoopbackHttp && local && url.protocol === "http:"))
-  ) {
-    throw new Error("OIDC endpoints must use HTTPS");
-  }
+  if (!oidcEndpointAllowed(url, nodeEnv)) throw new Error("OIDC endpoints must use HTTPS");
   return url;
 }
 
@@ -58,15 +50,15 @@ function nonceFor(codeVerifier: string): string {
 }
 
 export function createOidcProvider(
-  options: { issuer: string; clientId: string; clientSecret: string; allowLoopbackHttp: boolean },
+  options: { issuer: string; clientId: string; clientSecret: string; nodeEnv: string },
   toUser: (profile: Record<string, unknown>) => OAuth2UserInfo | null,
 ) {
-  const { issuer, clientId, clientSecret, allowLoopbackHttp } = options;
-  const issuerUrl = oidcUrl(issuer, allowLoopbackHttp);
+  const { issuer, clientId, clientSecret, nodeEnv } = options;
+  const issuerUrl = oidcUrl(issuer, nodeEnv);
   if (issuerUrl.search) throw new Error("OIDC issuer must not contain a query");
   const discoveryUrl = oidcUrl(
     `${issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`,
-    allowLoopbackHttp,
+    nodeEnv,
   );
   let jwks: { url: string; resolver: ReturnType<typeof createRemoteJWKSet> } | undefined;
 
@@ -75,7 +67,7 @@ export function createOidcProvider(
     if (doc.issuer !== issuer) throw new Error("OIDC discovery issuer does not match OIDC_ISSUER");
     const endpoint = (key: string) => {
       if (typeof doc[key] !== "string") throw new Error(`OIDC discovery is missing ${key}`);
-      return oidcUrl(doc[key], allowLoopbackHttp);
+      return oidcUrl(doc[key], nodeEnv);
     };
     const advertised = doc.id_token_signing_alg_values_supported ?? ["RS256"];
     if (!Array.isArray(advertised)) throw new Error("Invalid OIDC signing algorithms");
@@ -147,7 +139,13 @@ export function createOidcProvider(
         });
         if (profile.sub !== payload.sub)
           throw new Error("OIDC UserInfo subject does not match the ID token");
-        return toUser(profile);
+        return toUser({
+          ...profile,
+          // An explicit verification claim in the signed token takes precedence.
+          ...(Object.hasOwn(payload, "email_verified")
+            ? { email_verified: payload.email_verified }
+            : {}),
+        });
       } catch (error) {
         reportCaughtError(error, "platform/engine/lib/oidc");
         return null;

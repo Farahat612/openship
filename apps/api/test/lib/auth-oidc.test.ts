@@ -108,6 +108,7 @@ async function idToken(): Promise<string | undefined> {
   if (tokenMode === "wrong authorized party") payload.azp = "other-client";
   if (tokenMode === "multiple audiences") payload.aud = ["oidc-test-client-id", "other-client"];
   if (tokenMode.startsWith("userinfo")) delete payload.email;
+  if (tokenMode === "userinfo unverified token") payload.email_verified = false;
   if (tokenMode === "userinfo mismatch") payload.sub = "different-subject";
   if (tokenMode === "unsigned") {
     const enc = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -463,6 +464,16 @@ describe("OIDC callback token validation", () => {
     expect(response.headers.get("location")).toBe("http://localhost:3001/projects");
     expect(await db.select().from(schema.session)).toHaveLength(1);
     expect(userInfoRequests).toBe(1);
+  });
+
+  it("does not override a signed unverified email with UserInfo", async () => {
+    tokenMode = "userinfo unverified token";
+    const start = await startOidcSignIn();
+    const response = await completeOidcCallback(start.state, start.cookieHeader);
+    expect(new URL(response.headers.get("location")!).searchParams.get("error")).toBe(
+      "account_not_linked",
+    );
+    expect(await db.select().from(schema.session)).toHaveLength(0);
   });
 
   it("rejects a replayed state before a second token exchange", async () => {

@@ -2,6 +2,7 @@ import { reportCaughtError as observeCaughtError, diagnostics as errorDiagnostic
 import { z } from "zod";
 import { createPrivateKey } from "crypto";
 import { assertCloudBillingEnvironment } from "./cloud-billing-env";
+import { oidcEndpointAllowed } from "../lib/oidc-endpoint";
 import { DEFAULT_ENCRYPTION_SECRET as DEFAULT_BETTER_AUTH_SECRET } from "@repo/db/encryption";
 import {
   runtimeTarget,
@@ -777,8 +778,10 @@ if (env.OPENSHIP_ADVERTISED_ORIGIN) {
 }
 
 // ─── OIDC_ISSUER validation ───────────────────────────────────────────────
-// Validate that OIDC_ISSUER, when provided, is a valid http(s) URL so discovery
+// Validate that OIDC_ISSUER, when provided, is a valid URL so discovery
 // requests to `${OIDC_ISSUER}/.well-known/openid-configuration` fail fast at boot.
+// Production requires HTTPS. Development/test HTTP is limited to loopback.
+// Discovered endpoints are checked again at runtime.
 if (env.OIDC_ISSUER) {
   const raw = env.OIDC_ISSUER.trim();
   if (raw) {
@@ -794,6 +797,12 @@ if (env.OIDC_ISSUER) {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new Error(
         `OIDC_ISSUER must use http or https (got "${parsed.protocol}" in "${raw}").`,
+      );
+    }
+    if (!oidcEndpointAllowed(parsed, env.NODE_ENV) || parsed.search) {
+      throw new Error(
+        "OIDC_ISSUER must use HTTPS without credentials, query or fragment. " +
+          "HTTP is allowed only on loopback during development or tests.",
       );
     }
   }

@@ -96,7 +96,7 @@ export function oidcProviderConfig(): OidcProviderConfig | undefined {
   }
   try {
     return {
-      ...createOidcProvider({ issuer, clientId, clientSecret, allowLoopbackHttp: env.NODE_ENV !== "production" }, toOidcUser),
+      ...createOidcProvider({ issuer, clientId, clientSecret, nodeEnv: env.NODE_ENV }, toOidcUser),
       providerId: "oidc",
       displayName: env.OIDC_DISPLAY_NAME?.trim() || DEFAULT_OIDC_DISPLAY_NAME,
     };
