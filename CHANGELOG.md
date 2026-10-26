@@ -6,6 +6,10 @@ Runtime security notices use the signed feed published from `security-advisories
 
 ## Unreleased
 
+- **Preserve live Docker logs** — decode stdout and stderr independently across
+  split frames and UTF-8 characters, keep TTY logs intact, and report malformed or
+  truncated streams so the existing reconnect flow can recover (#1482).
+
 - **OpenShip Earn** — explain the Cloud affiliate program at `/affiliates`, with
   an interactive commission split, monthly and annual reward timing, payout
   guidance, and a dedicated social preview. Label the dashboard affiliate entry

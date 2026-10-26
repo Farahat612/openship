@@ -939,46 +939,6 @@ function stripDockerHeaders(buf: Buffer): string {
     .join("");
 }
 
-/**
- * Turn a followed `container.logs()` stream into text one chunk at a time. Several
- * frames can share a network chunk and one frame can straddle chunks (header
- * included), and a UTF-8 character can be cut anywhere, so the unfinished frame
- * tail and the decoder state carry over between calls. Output whose first chunk
- * is not framed (Tty:true) is decoded as raw text, like `splitDockerFrames`.
- */
-function createDockerLogTextDecoder(): { write(chunk: Buffer): string; end(): string } {
-  const text = new StringDecoder("utf8");
-  let framed: boolean | undefined;
-  let pending: Buffer = Buffer.alloc(0);
-  return {
-    write(chunk) {
-      framed ??=
-        hasDockerFrameHeader(chunk) || (chunk.length < 8 && (chunk[0] === 1 || chunk[0] === 2));
-      if (!framed) return text.write(chunk);
-      pending = pending.length > 0 ? Buffer.concat([pending, chunk]) : chunk;
-      let out = "";
-      let offset = 0;
-      while (pending.length - offset >= 8) {
-        if (!hasDockerFrameHeader(pending, offset)) {
-          // Alignment is lost; show the rest as text rather than drop log output.
-          out += text.write(pending.subarray(offset));
-          offset = pending.length;
-          break;
-        }
-        const end = offset + 8 + pending.readUInt32BE(offset + 4);
-        if (end > pending.length) break;
-        out += text.write(pending.subarray(offset + 8, end));
-        offset = end;
-      }
-      pending = pending.subarray(offset);
-      return out;
-    },
-    end() {
-      return text.end();
-    },
-  };
-}
-
 /** Parse a Docker timestamp-prefixed log line into timestamp + message. */
 function parseTimestampedLine(line: string): { timestamp: string; message: string } {
   const spaceIdx = line.indexOf(" ");
@@ -5599,6 +5559,8 @@ OPENSHIP_BASES_PY`, { timeout: 5_000 });
   ): Promise<() => void> {
     await this.assertContainerAccess(containerId);
     const container = this.docker.getContainer(containerId);
+    // Framing is a container property, not something to guess from log contents.
+    const tty = (await container.inspect()).Config?.Tty === true;
     const stream = (await container.logs({
       stdout: true,
       stderr: true,
@@ -5609,47 +5571,69 @@ OPENSHIP_BASES_PY`, { timeout: 5_000 });
 
     let destroyed = false;
     let ended = false;
-
+    const stop = () => {
+      (stream as Readable).destroy();
+      stdout.sink.destroy();
+      stderr.sink.destroy();
+    };
     const notifyEnd = (error?: Error) => {
       if (destroyed || ended) return;
       ended = true;
+      stop();
       opts?.onEnd?.(error);
     };
-
-    let buffer = "";
-    const decoder = createDockerLogTextDecoder();
-    stream.on("data", (chunk: Buffer) => {
-      if (destroyed) return;
-      buffer += decoder.write(chunk);
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line) continue;
-        const { timestamp, message } = parseTimestampedLine(line);
-        onLog({ timestamp, message, level: parseLogLevel(message) });
-      }
-    });
-
+    const emitLine = (line: string) => {
+      if (!line || destroyed || ended) return;
+      const { timestamp, message } = parseTimestampedLine(line);
+      onLog({ timestamp, message, level: parseLogLevel(message) });
+    };
+    // stdout and stderr are independent byte streams: neither UTF-8 decoder state
+    // nor partial lines can be shared, even when Docker interleaves their frames.
+    const lineSink = () => {
+      const decoder = new StringDecoder("utf8");
+      let pending = "";
+      const sink = new Writable({
+        write(chunk: Buffer, _encoding, done) {
+          if (!destroyed && !ended) {
+            pending += decoder.write(chunk);
+            const lines = pending.split("\n");
+            pending = lines.pop() ?? "";
+            for (const line of lines) emitLine(line);
+          }
+          done();
+        },
+      });
+      sink.on("error", notifyEnd);
+      return {
+        sink,
+        flush() {
+          emitLine(pending + decoder.end());
+          pending = "";
+        },
+      };
+    };
+    const stdout = lineSink();
+    const stderr = lineSink();
+    if (tty) {
+      stream.pipe(stdout.sink);
+    } else {
+      // Reuse the bounded parser used by attach/exec. In particular, do not
+      // reinterpret malformed frames as text or silently discard a truncated tail.
+      demuxDockerStream(stream, stdout.sink, stderr.sink, notifyEnd);
+    }
     stream.on("end", () => {
-      buffer += decoder.end();
-      if (buffer && !destroyed) {
-        onLog({
-          timestamp: new Date().toISOString(),
-          message: buffer,
-          level: parseLogLevel(buffer),
-        });
-        buffer = "";
-      }
+      if (destroyed || ended) return;
+      stdout.flush();
+      stderr.flush();
       notifyEnd();
     });
     stream.on("error", notifyEnd);
     stream.on("close", () => notifyEnd(new Error("Runtime log connection closed before completion")));
 
     return () => {
-      if (!destroyed) {
-        destroyed = true;
-        (stream as any).destroy?.();
-      }
+      if (destroyed) return;
+      destroyed = true;
+      stop();
     };
   }
 
