@@ -1,106 +1,126 @@
-import "../mail/_setup-env";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { repos, seedOwner, installFakeRunner } from "../jobs/_harness";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Hono } from "hono";
 import { ENV_MASK } from "@repo/core";
-
-/**
- * Project env merges must follow the same rules as service env merges: a value
- * sent back as the list mask keeps the stored secret, an upsert that omits
- * isSecret keeps the stored flag, and invalid names are refused. Otherwise an
- * API, CLI or SDK round trip through listEnvVars exposes or destroys secrets.
- */
-
-const h = vi.hoisted(() => ({
-  findById: vi.fn(),
-  listEnvVars: vi.fn(),
-  mergeEnvVars: vi.fn(async () => {}),
-  listByProject: vi.fn(async () => []),
-}));
-
-vi.mock("@repo/db", () => ({
-  repos: {
-    project: { findById: h.findById, listEnvVars: h.listEnvVars, mergeEnvVars: h.mergeEnvVars },
-    service: { listByProject: h.listByProject },
-  },
-}));
-
+import { OpenshipClient } from "@repo/sdk/client";
 import { encrypt, decrypt } from "@repo/platform/engine/lib/encryption";
-import { mergeEnvVars } from "@repo/platform/engine/modules/projects/project-env.service";
+import { projectRoutes } from "../../../src/modules/projects/project.routes";
+import { healthRoutes } from "../../../src/modules/health/health.routes";
+import { handleApiError } from "../../../src/middleware/error-handler";
+import { seedProject, seedService } from "../../helpers/seed";
 
-type Written = { key: string; value: string; isSecret?: boolean };
+installFakeRunner();
+const app = new Hono()
+  .onError(handleApiError)
+  .route("/api/health", healthRoutes)
+  .route("/api/projects", projectRoutes);
 
-function storedRow(key: string, value: string, isSecret: boolean) {
-  return { id: `env-${key}`, key, value: encrypt(value), isSecret, serviceId: null };
-}
+describe("project environment merge through HTTP, SDK and real storage", () => {
+  let owner: Awaited<ReturnType<typeof seedOwner>>;
+  let project: Awaited<ReturnType<typeof seedProject>>;
+  let client: OpenshipClient;
+  const rows = () => repos.project.listEnvVars(project.id, "production", null);
+  beforeEach(async () => {
+    owner = await seedOwner();
+    project = await seedProject(owner.orgId);
+    await repos.project.bulkSetEnvVars(project.id, "production", [
+      { key: "API_KEY", value: encrypt("real-secret"), isSecret: true },
+      { key: "KEEP", value: encrypt("keep-me"), isSecret: false },
+    ]);
+    client = new OpenshipClient({
+      baseUrl: "http://openship.test",
+      token: owner.token,
+      organizationId: owner.orgId,
+      fetch: ((url, init) => app.request(url as string, init)) as typeof fetch,
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
 
-function written(): Written[] {
-  const calls = h.mergeEnvVars.mock.calls as unknown as [string, string, Written[], string[]][];
-  return calls[0]![2];
-}
-
-beforeEach(() => {
-  vi.clearAllMocks();
-  h.findById.mockResolvedValue({ id: "p1", organizationId: "org1" });
-  h.listEnvVars.mockResolvedValue([storedRow("API_KEY", "real-secret", true)]);
-});
-
-describe("project env merge", () => {
   it("keeps a stored secret secret when an upsert omits isSecret", async () => {
-    await mergeEnvVars("p1", "org1", {
+    await client.projects.mergeEnvVars(project.id, {
       environment: "production",
       upserts: [{ key: "API_KEY", value: "rotated" }],
       deletes: [],
     });
-    expect(written()).toEqual([{ key: "API_KEY", value: expect.any(String), isSecret: true }]);
-    expect(decrypt(written()[0]!.value)).toBe("rotated");
+    const row = (await rows()).find((row) => row.key === "API_KEY")!;
+    expect(row.isSecret).toBe(true);
+    expect(decrypt(row.value)).toBe("rotated");
+    const listed = await client.projects.listEnvVars(project.id);
+    expect(listed.find((row) => row.key === "API_KEY")!.value).toBe(ENV_MASK);
+    expect(JSON.stringify(listed)).not.toContain("rotated");
   });
 
   it("still lets an explicit isSecret false unmark a secret", async () => {
-    await mergeEnvVars("p1", "org1", {
+    await client.projects.mergeEnvVars(project.id, {
       environment: "production",
       upserts: [{ key: "API_KEY", value: "now-public", isSecret: false }],
       deletes: [],
     });
-    expect(written()[0]!.isSecret).toBe(false);
+    const listed = await client.projects.listEnvVars(project.id);
+    expect(listed.find((row) => row.key === "API_KEY")).toMatchObject({
+      isSecret: false,
+      value: "now-public",
+    });
   });
 
-  it("keeps the stored value when the list mask is sent back", async () => {
-    const before = (await h.listEnvVars())[0]!.value as string;
-    await mergeEnvVars("p1", "org1", {
+  it("keeps the stored ciphertext when the list mask is sent back", async () => {
+    const before = (await rows()).find((row) => row.key === "API_KEY")!.value;
+    await client.projects.mergeEnvVars(project.id, {
       environment: "production",
       upserts: [{ key: "API_KEY", value: ENV_MASK }],
       deletes: [],
     });
-    expect(written()[0]!.value).toBe(before);
-    expect(decrypt(written()[0]!.value)).toBe("real-secret");
+    expect((await rows()).find((row) => row.key === "API_KEY")!.value).toBe(before);
   });
 
-  it("refuses the mask for a key with no stored value", async () => {
+  it("refuses an unknown mask without partially applying other edits", async () => {
     await expect(
-      mergeEnvVars("p1", "org1", {
+      client.projects.mergeEnvVars(project.id, {
         environment: "production",
-        upserts: [{ key: "NEW_TOKEN", value: ENV_MASK }],
+        upserts: [
+          { key: "NEW", value: "must-not-save" },
+          { key: "UNKNOWN", value: ENV_MASK },
+        ],
+        deletes: ["KEEP"],
+      }),
+    ).rejects.toThrow(/No saved value exists/);
+    expect((await rows()).map((row) => row.key).sort()).toEqual(["API_KEY", "KEEP"]);
+  });
+
+  it.each(["MY VAR=1", "1ST", "A-B"])("refuses invalid key %s before writing", async (key) => {
+    await expect(
+      client.projects.mergeEnvVars(project.id, {
+        environment: "production",
+        upserts: [{ key, value: "x" }],
         deletes: [],
       }),
-    ).rejects.toThrow(/No saved value exists for "NEW_TOKEN"/);
-    expect(h.mergeEnvVars).not.toHaveBeenCalled();
+    ).rejects.toThrow(/Invalid environment variable name/);
+    expect((await rows()).map((row) => row.key).sort()).toEqual(["API_KEY", "KEEP"]);
   });
 
-  it("refuses invalid variable names before writing", async () => {
-    for (const key of ["MY VAR=1", "1ST", "A-B"]) {
-      await expect(
-        mergeEnvVars("p1", "org1", {
-          environment: "production",
-          upserts: [{ key, value: "x" }],
-          deletes: [],
-        }),
-      ).rejects.toThrow(/Invalid environment variable name/);
-    }
-    expect(h.mergeEnvVars).not.toHaveBeenCalled();
+  it("rejects NUL values before writing", async () => {
+    await expect(
+      client.projects.mergeEnvVars(project.id, {
+        environment: "production",
+        upserts: [{ key: "API_KEY", value: "x\0y" }],
+        deletes: [],
+      }),
+    ).rejects.toThrow(/NUL/);
+    expect(decrypt((await rows()).find((row) => row.key === "API_KEY")!.value)).toBe("real-secret");
   });
 
-  it("marks a new secret-looking key as secret when isSecret is omitted", async () => {
-    h.listEnvVars.mockResolvedValue([]);
-    await mergeEnvVars("p1", "org1", {
+  it("infers secret-looking new keys without changing other scopes", async () => {
+    const service = await seedService(project.id, { name: "worker" });
+    await repos.project.bulkSetEnvVars(project.id, "preview", [
+      { key: "API_KEY", value: encrypt("preview"), isSecret: true },
+    ]);
+    await repos.project.bulkSetEnvVars(
+      project.id,
+      "production",
+      [{ key: "API_KEY", value: encrypt("service"), isSecret: true }],
+      service.id,
+    );
+    await client.projects.mergeEnvVars(project.id, {
       environment: "production",
       upserts: [
         { key: "DATABASE_PASSWORD", value: "pw" },
@@ -108,9 +128,88 @@ describe("project env merge", () => {
       ],
       deletes: [],
     });
-    expect(written().map((row) => [row.key, row.isSecret])).toEqual([
-      ["DATABASE_PASSWORD", true],
-      ["PUBLIC_URL", false],
-    ]);
+    const saved = await rows();
+    expect(saved.find((row) => row.key === "DATABASE_PASSWORD")!.isSecret).toBe(true);
+    expect(saved.find((row) => row.key === "PUBLIC_URL")!.isSecret).toBe(false);
+    expect(decrypt((await repos.project.listEnvVars(project.id, "preview", null))[0]!.value)).toBe(
+      "preview",
+    );
+    expect(
+      decrypt((await repos.project.listEnvVars(project.id, "production", service.id))[0]!.value),
+    ).toBe("service");
+  });
+
+  // Commit a second writer after the service's read but before its write lock.
+  // Only the interleaving is injected: both writes and the transaction are real.
+  function rotateAfterRead(value: string, isSecret: boolean) {
+    const read = repos.project.listEnvVars.bind(repos.project);
+    vi.spyOn(repos.project, "listEnvVars").mockImplementationOnce(async (...args) => {
+      const before = await read(...args);
+      await repos.project.mergeEnvVars(
+        project.id,
+        "production",
+        [{ key: "API_KEY", value: encrypt(value), isSecret }],
+        [],
+      );
+      return before;
+    });
+  }
+
+  it("does not restore an old secret after a concurrent rotation or partially apply the request", async () => {
+    rotateAfterRead("concurrent-secret", true);
+    await expect(
+      client.projects.mergeEnvVars(project.id, {
+        environment: "production",
+        upserts: [
+          { key: "API_KEY", value: ENV_MASK },
+          { key: "NEW", value: "must-not-save" },
+        ],
+        deletes: ["KEEP"],
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    const saved = await rows();
+    expect(saved.map((row) => row.key).sort()).toEqual(["API_KEY", "KEEP"]);
+    expect(decrypt(saved.find((row) => row.key === "API_KEY")!.value)).toBe("concurrent-secret");
+  });
+
+  it("does not restore an old secrecy flag after another writer changes it", async () => {
+    rotateAfterRead("now-public", false);
+    await expect(
+      client.projects.mergeEnvVars(project.id, {
+        environment: "production",
+        upserts: [{ key: "API_KEY", value: "next" }],
+        deletes: [],
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    const saved = (await rows()).find((row) => row.key === "API_KEY")!;
+    expect(saved.isSecret).toBe(false);
+    expect(decrypt(saved.value)).toBe("now-public");
+  });
+
+  it("allows unrelated concurrent edits", async () => {
+    rotateAfterRead("concurrent-secret", true);
+    await client.projects.mergeEnvVars(project.id, {
+      environment: "production",
+      upserts: [{ key: "KEEP", value: "changed" }],
+      deletes: [],
+    });
+    const saved = await rows();
+    expect(decrypt(saved.find((row) => row.key === "API_KEY")!.value)).toBe("concurrent-secret");
+    expect(decrypt(saved.find((row) => row.key === "KEEP")!.value)).toBe("changed");
+  });
+
+  it("refuses writes from another organization", async () => {
+    const outsider = await seedOwner();
+    const response = await app.request(`/api/projects/${project.id}/env`, {
+      method: "PATCH",
+      headers: { ...outsider.auth, "content-type": "application/json" },
+      body: JSON.stringify({
+        environment: "production",
+        upserts: [{ key: "API_KEY", value: "intruder" }],
+        deletes: [],
+      }),
+    });
+    expect([403, 404]).toContain(response.status);
+    expect(decrypt((await rows()).find((row) => row.key === "API_KEY")!.value)).toBe("real-secret");
   });
 });

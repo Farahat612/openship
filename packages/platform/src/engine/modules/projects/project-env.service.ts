@@ -4,7 +4,13 @@
 
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import { repos } from "@repo/db";
-import { ValidationError, SYSTEM, isValidEnvKey, looksLikeSecretKey } from "@repo/core";
+import {
+  ConflictError,
+  ValidationError,
+  SYSTEM,
+  isValidEnvKey,
+  looksLikeSecretKey,
+} from "@repo/core";
 import { encrypt, decrypt, decryptEnvMap } from "../../lib/encryption";
 import { ENV_MASK } from "../../lib/secret-env";
 import { assertResourceInOrg } from "../../lib/resource-access";
@@ -146,6 +152,27 @@ export async function mergeEnvVars(
       );
     }
   }
-  await repos.project.mergeEnvVars(projectId, data.environment, encrypted, data.deletes);
+  await repos.project.mergeEnvVarScopes(
+    projectId,
+    data.environment,
+    [{ upserts: encrypted, deletes: data.deletes }],
+    ({ vars }) => {
+      // Resolve preservation against the same configuration lock as the write.
+      // A masked form must never restore a secret rotated after the earlier read.
+      const current = new Map(vars.filter((row) => !row.serviceId).map((row) => [row.key, row]));
+      for (const row of data.upserts) {
+        const prior = priorRows.get(row.key);
+        const latest = current.get(row.key);
+        if (
+          (row.value === ENV_MASK && prior?.value !== latest?.value) ||
+          (row.isSecret === undefined && prior?.isSecret !== latest?.isSecret)
+        ) {
+          throw new ConflictError(
+            "Environment variables changed while saving. Reload and try again.",
+          );
+        }
+      }
+    },
+  );
   return { upserted: data.upserts.length, deleted: data.deletes.length, warnings };
 }
