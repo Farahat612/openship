@@ -28,10 +28,14 @@ vi.mock("@repo/core/diagnostics", () => ({
  */
 
 const env: Record<string, string | undefined> = {};
+const deployment = { selfHostedOidcAllowed: true };
 
 vi.mock("@repo/platform/engine/config/env", () => ({
   get env() {
     return env;
+  },
+  get selfHostedOidcAllowed() {
+    return deployment.selfHostedOidcAllowed;
   },
 }));
 
@@ -42,6 +46,7 @@ async function load() {
 
 afterEach(() => {
   for (const key of Object.keys(env)) delete env[key];
+  deployment.selfHostedOidcAllowed = true;
   diagnosticsWarn.mockClear();
   reportCaught.mockClear();
   vi.unstubAllGlobals();
@@ -155,6 +160,23 @@ describe("socialProviderCredentials", () => {
 });
 
 describe("oidcProviderConfig", () => {
+  it("neither registers nor advertises instance OIDC on Cloud, even with complete credentials", async () => {
+    deployment.selfHostedOidcAllowed = false;
+    Object.assign(env, {
+      OIDC_ISSUER: "https://idp.example.com",
+      OIDC_CLIENT_ID: "client",
+      OIDC_CLIENT_SECRET: "secret",
+      GITHUB_CLIENT_ID: "github-client",
+      GITHUB_CLIENT_SECRET: "github-secret",
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { oidcProviderConfig, configuredAuthProviders } = await load();
+    expect(oidcProviderConfig()).toBeUndefined();
+    expect(configuredAuthProviders()).toEqual([{ id: "github", kind: "social" }]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("registers oidc only when issuer, client id, and client secret are all present", async () => {
     env.OIDC_ISSUER = "https://idp.example.com/application/o/openship/";
     env.OIDC_CLIENT_ID = "oidc-client-id";

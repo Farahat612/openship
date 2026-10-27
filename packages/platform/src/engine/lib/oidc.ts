@@ -49,6 +49,31 @@ function nonceFor(codeVerifier: string): string {
   return createHash("sha256").update(`openship:oidc:nonce:${codeVerifier}`).digest("base64url");
 }
 
+type OidcRequest = {
+  path?: string;
+  body?: Record<string, unknown>;
+  params?: Record<string, string | undefined>;
+};
+
+function isOidcStart(ctx: OidcRequest): boolean {
+  return (
+    ["/sign-in/oauth2", "/oauth2/link", "/sign-in/social", "/link-social"].includes(
+      ctx.path ?? "",
+    ) &&
+    (ctx.body?.providerId === "oidc" || ctx.body?.provider === "oidc")
+  );
+}
+
+/** Share the route boundary with the existing account-security mode guard. */
+export function isOidcRequest(ctx: OidcRequest): boolean {
+  return (
+    isOidcStart(ctx) ||
+    !!ctx.path?.startsWith("/oauth2/callback/") ||
+    (ctx.path?.startsWith("/callback/") === true &&
+      (ctx.params?.id === "oidc" || ctx.path === "/callback/oidc"))
+  );
+}
+
 export function createOidcProvider(
   options: { issuer: string; clientId: string; clientSecret: string; nodeEnv: string },
   toUser: (profile: Record<string, unknown>) => OAuth2UserInfo | null,
@@ -141,10 +166,12 @@ export function createOidcProvider(
           throw new Error("OIDC UserInfo subject does not match the ID token");
         return toUser({
           ...profile,
-          // An explicit verification claim in the signed token takes precedence.
-          ...(Object.hasOwn(payload, "email_verified")
-            ? { email_verified: payload.email_verified }
-            : {}),
+          // This email came from UserInfo, so its verification must too. A
+          // stale positive flag in a token without email cannot verify a newly
+          // changed profile address; an explicit signed negative also denies.
+          email_verified:
+            profile.email_verified === true &&
+            (!Object.hasOwn(payload, "email_verified") || payload.email_verified === true),
         });
       } catch (error) {
         reportCaughtError(error, "platform/engine/lib/oidc");
@@ -174,12 +201,7 @@ export function createOidcProvider(
 /** Add only OIDC validation; Better Auth still owns OAuth state, accounts and sessions. */
 export function oidcOAuthPlugin(provider?: ReturnType<typeof createOidcProvider>) {
   const plugin = genericOAuth({ config: provider ? [provider] : [] });
-  const isStart = (ctx: { path?: string; body?: Record<string, unknown> }) =>
-    !!provider &&
-    ["/sign-in/oauth2", "/oauth2/link", "/sign-in/social", "/link-social"].includes(
-      ctx.path ?? "",
-    ) &&
-    (ctx.body?.providerId === "oidc" || ctx.body?.provider === "oidc");
+  const isStart = (ctx: OidcRequest) => !!provider && isOidcStart(ctx);
   return {
     ...plugin,
     init: ((ctx) => {

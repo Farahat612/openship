@@ -12,6 +12,7 @@ import { twoFactor } from "better-auth/plugins";
 import { resolvePasskeyConfig } from "./passkey-config";
 import { atomicSecurityEndpoint } from "./account-security-transaction";
 import type { Database } from "@repo/db/factory";
+import { isOidcRequest } from "./oidc";
 
 interface AccountSecurityOptions {
   database: Database;
@@ -109,14 +110,12 @@ export function accountSecurityPlugins(options: AccountSecurityOptions) {
           }),
         },
         {
-          matcher: (ctx: { path?: string }) =>
-            !!ctx.path &&
-            (ctx.path.startsWith("/sign-in/oauth2") || ctx.path.startsWith("/oauth2/callback/")),
+          matcher: isOidcRequest,
           handler: createAuthMiddleware(async () => {
-            if ((await options.getAuthMode()) === "none") {
+            if ((await options.getAuthMode()) !== "local") {
               throw new APIError("FORBIDDEN", {
                 code: "OAUTH_DISABLED",
-                message: "OAuth sign-in is disabled on zero-auth instances.",
+                message: "OIDC sign-in requires an instance with local accounts.",
               });
             }
           }),

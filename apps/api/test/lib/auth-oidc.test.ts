@@ -81,6 +81,7 @@ let discoveryOverride: Record<string, unknown> = {};
 let idpUserInfo: Record<string, unknown> = {};
 let tokenRequests = 0;
 let userInfoRequests = 0;
+let discoveryRequests = 0;
 beforeAll(async () => {
   keys = await generateKeyPair("RS256");
   wrongKeys = await generateKeyPair("RS256");
@@ -109,6 +110,8 @@ async function idToken(): Promise<string | undefined> {
   if (tokenMode === "multiple audiences") payload.aud = ["oidc-test-client-id", "other-client"];
   if (tokenMode.startsWith("userinfo")) delete payload.email;
   if (tokenMode === "userinfo unverified token") payload.email_verified = false;
+  if (tokenMode === "userinfo stale verification") payload.email_verified = true;
+  if (tokenMode === "userinfo verification only") delete payload.email_verified;
   if (tokenMode === "userinfo mismatch") payload.sub = "different-subject";
   if (tokenMode === "unsigned") {
     const enc = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -132,6 +135,7 @@ beforeEach(async () => {
   discoveryOverride = {};
   tokenRequests = 0;
   userInfoRequests = 0;
+  discoveryRequests = 0;
   await db.delete(schema.verification);
   await db.delete(schema.invitation);
   await db.delete(schema.session);
@@ -150,6 +154,7 @@ beforeEach(async () => {
     if (tokenMode === "redirect discovery" && url === DISCOVERY_URL)
       return Response.redirect(`${oidcEnv.origin}/leaked`, 307);
     if (url === DISCOVERY_URL) {
+      discoveryRequests++;
       return new Response(
         JSON.stringify({
           issuer: `${oidcEnv.origin}/application/o/openship/`,
@@ -244,6 +249,22 @@ async function completeOidcCallback(state: string, cookieHeader: string): Promis
 }
 
 describe("OIDC generic-oauth integration", () => {
+  it("cannot bootstrap the first instance administrator through OIDC", async () => {
+    idpUserInfo = idpProfile({
+      sub: "first-user",
+      email: "admin@example.test",
+      email_verified: true,
+    });
+    const start = await startOidcSignIn();
+    const response = await completeOidcCallback(start.state, start.cookieHeader);
+    expect(new URL(response.headers.get("location")!).searchParams.get("error")).toContain(
+      "Initialize",
+    );
+    expect(await db.select().from(schema.user)).toHaveLength(0);
+    expect(await db.select().from(schema.account)).toHaveLength(0);
+    expect(await db.select().from(schema.session)).toHaveLength(0);
+  });
+
   it("does not link to an existing user and does not mark email verified when email_verified is false", async () => {
     await provisionUser({
       id: "user_existing_1",
@@ -270,7 +291,7 @@ describe("OIDC generic-oauth integration", () => {
     const callbackRes = await completeOidcCallback(state, cookieHeader);
     expect(callbackRes.status).toBe(302);
     const redirectLocation = new URL(callbackRes.headers.get("location")!);
-    expect(redirectLocation.searchParams.get("error")).toBe("account_not_linked");
+    expect(redirectLocation.searchParams.get("error")).toBe("user_info_is_missing");
 
     const users = await db
       .select()
@@ -322,10 +343,10 @@ describe("OIDC generic-oauth integration", () => {
       .where(eq(schema.account.userId, "user_existing_2"));
     expect(accounts).toHaveLength(1);
     expect(accounts[0]!.providerId).toBe("oidc");
-    expect(accounts[0]!.accountId).toBe("oidc-sub-verified");
+    expect(accounts[0]!.accountId).toBe(JSON.stringify([ISSUER, "oidc-sub-verified"]));
   });
 
-  it("enforces the invite-only gate on oidc sign-ups and leaves unverified invited sign-ups unverified", async () => {
+  it("enforces the invite-only gate and provisions a verified invitee through the shared flow", async () => {
     // Seed the instance admin so subsequent sign-ups must match an admin invitation.
     await provisionUser({
       id: "admin_1",
@@ -357,8 +378,7 @@ describe("OIDC generic-oauth integration", () => {
       .where(eq(schema.user.email, "stranger@example.test"));
     expect(strangerRows).toHaveLength(0);
 
-    // 2. Invited user is allowed through the gate; with email_verified=false,
-    // the new user row is created with emailVerified=false.
+    // 2. A verified invited user enters through the existing provisioning hooks.
     await db.insert(schema.invitation).values({
       id: "inv_oidc_1",
       organizationId: "org_admin_1",
@@ -372,8 +392,10 @@ describe("OIDC generic-oauth integration", () => {
     idpUserInfo = idpProfile({
       sub: "oidc-sub-invited",
       email: "invited@example.test",
-      email_verified: false,
+      email_verified: true,
       name: "Invited Member",
+      role: "admin",
+      groups: ["administrators"],
     });
     const invitedStart = await startOidcSignIn();
     const invitedRes = await completeOidcCallback(invitedStart.state, invitedStart.cookieHeader);
@@ -385,29 +407,133 @@ describe("OIDC generic-oauth integration", () => {
       .from(schema.user)
       .where(eq(schema.user.email, "invited@example.test"));
     expect(invitedRows).toHaveLength(1);
-    expect(invitedRows[0]!.emailVerified).toBe(false);
+    expect(invitedRows[0]!.emailVerified).toBe(true);
     expect(invitedRows[0]!.image).toBe("https://idp.example.test/avatar.png");
+    expect(invitedRows[0]!.role).toBe("user");
+    expect(
+      await db.select().from(schema.member).where(eq(schema.member.organizationId, "org_admin_1")),
+    ).toHaveLength(1);
   });
 
-  it("keeps the oidc provider inert when the instance is in zero-auth mode", async () => {
-    await db.insert(schema.instanceSettings).values({
-      id: "default",
-      authMode: "none",
-    });
-    clearAuthModeCache();
+  it.each([false, undefined, "true"])(
+    "does not admit an invitee using an unverified email claim: %s",
+    async (verified) => {
+      await provisionUser({
+        id: "admin_invite",
+        name: "Admin",
+        email: "admin@example.test",
+        role: "admin",
+      });
+      await db.insert(schema.invitation).values({
+        id: "inv_oidc_unverified",
+        organizationId: "org_admin_invite",
+        email: "invited@example.test",
+        role: "member",
+        status: "pending",
+        inviterId: "admin_invite",
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      idpUserInfo = idpProfile({
+        sub: "unverified-invitee",
+        email: "invited@example.test",
+        email_verified: verified,
+      });
+      const start = await startOidcSignIn();
+      const response = await completeOidcCallback(start.state, start.cookieHeader);
+      expect(new URL(response.headers.get("location")!).searchParams.get("error")).toBe(
+        "user_info_is_missing",
+      );
+      expect(
+        await db.select().from(schema.user).where(eq(schema.user.email, "invited@example.test")),
+      ).toHaveLength(0);
+      expect(await db.select().from(schema.account)).toHaveLength(0);
+      expect(await db.select().from(schema.session)).toHaveLength(0);
+      expect((await db.select().from(schema.invitation))[0]!.status).toBe("pending");
+    },
+  );
 
-    const response = await auth.handler(
-      new Request("http://localhost:4000/api/auth/sign-in/oauth2", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          providerId: "oidc",
-          callbackURL: "http://localhost:3001/projects",
-        }),
-      }),
-    );
-    expect(response.status).toBe(403);
-  });
+  it.each(["expired", "non-admin"])(
+    "preserves the shared invitation gate for a %s invitation",
+    async (reason) => {
+      await provisionUser({
+        id: "admin_invite",
+        name: "Admin",
+        email: "admin@example.test",
+        role: "admin",
+      });
+      await provisionUser({
+        id: "member_invite",
+        name: "Member",
+        email: "member@example.test",
+        role: "user",
+      });
+      await db.insert(schema.invitation).values({
+        id: "inv_oidc_invalid",
+        organizationId: "org_admin_invite",
+        email: "invited@example.test",
+        role: "member",
+        status: "pending",
+        inviterId: reason === "non-admin" ? "member_invite" : "admin_invite",
+        expiresAt: new Date(Date.now() + (reason === "expired" ? -60_000 : 60_000)),
+      });
+      idpUserInfo = idpProfile({
+        sub: "verified-invitee",
+        email: "invited@example.test",
+        email_verified: true,
+      });
+      const start = await startOidcSignIn();
+      const response = await completeOidcCallback(start.state, start.cookieHeader);
+      expect(new URL(response.headers.get("location")!).searchParams.get("error")).toContain(
+        "invite-only",
+      );
+      expect(
+        await db.select().from(schema.user).where(eq(schema.user.email, "invited@example.test")),
+      ).toHaveLength(0);
+      expect(await db.select().from(schema.session)).toHaveLength(0);
+    },
+  );
+
+  it.each(["none", "cloud"] as const)(
+    "blocks every OIDC entry point in %s auth mode",
+    async (authMode) => {
+      await db.insert(schema.instanceSettings).values({
+        id: "default",
+        authMode,
+      });
+      clearAuthModeCache();
+      for (const path of [
+        "/sign-in/oauth2",
+        "/sign-in/social",
+        "/oauth2/link",
+        "/link-social",
+        "/oauth2/callback/oidc",
+        "/callback/oidc",
+      ]) {
+        const callback = path.includes("/callback/");
+        const response = await auth.handler(
+          new Request(
+            `http://localhost:4000/api/auth${path}${callback ? "?code=test&state=test" : ""}`,
+            {
+              method: callback ? "GET" : "POST",
+              headers: { "Content-Type": "application/json" },
+              ...(!callback && {
+                body: JSON.stringify({
+                  providerId: "oidc",
+                  provider: "oidc",
+                  callbackURL: "http://localhost:3001/projects",
+                }),
+              }),
+            },
+          ),
+        );
+        expect(response.status, path).toBe(403);
+      }
+      expect(discoveryRequests).toBe(0);
+      expect(tokenRequests).toBe(0);
+      expect(await db.select().from(schema.verification)).toHaveLength(0);
+      expect(await db.select().from(schema.session)).toHaveLength(0);
+    },
+  );
 });
 
 describe("OIDC callback token validation", () => {
@@ -471,10 +597,193 @@ describe("OIDC callback token validation", () => {
     const start = await startOidcSignIn();
     const response = await completeOidcCallback(start.state, start.cookieHeader);
     expect(new URL(response.headers.get("location")!).searchParams.get("error")).toBe(
-      "account_not_linked",
+      "user_info_is_missing",
     );
     expect(await db.select().from(schema.session)).toHaveLength(0);
   });
+
+  it("does not apply an old token verification flag to an unverified UserInfo email", async () => {
+    tokenMode = "userinfo stale verification";
+    idpUserInfo.email_verified = false;
+    const start = await startOidcSignIn();
+    const response = await completeOidcCallback(start.state, start.cookieHeader);
+    expect(new URL(response.headers.get("location")!).searchParams.get("error")).toBe(
+      "user_info_is_missing",
+    );
+    expect(await db.select().from(schema.account)).toHaveLength(0);
+    expect(await db.select().from(schema.session)).toHaveLength(0);
+  });
+
+  it("accepts verification from matching UserInfo when the ID token omits email claims", async () => {
+    tokenMode = "userinfo verification only";
+    const start = await startOidcSignIn();
+    const response = await completeOidcCallback(start.state, start.cookieHeader);
+    expect(response.headers.get("location")).toBe("http://localhost:3001/projects");
+    expect(await db.select().from(schema.account)).toHaveLength(1);
+    expect(await db.select().from(schema.session)).toHaveLength(1);
+  });
+
+  it("does not normalize a subject into another linked account", async () => {
+    const accountId = JSON.stringify([ISSUER, "sub-admin"]);
+    await db.insert(schema.account).values({
+      id: "oidc_admin_account",
+      userId: "admin_validation",
+      providerId: "oidc",
+      accountId,
+    });
+    idpUserInfo = idpProfile({
+      sub: " sub-admin ",
+      email: "different@example.test",
+      email_verified: true,
+    });
+    const start = await startOidcSignIn();
+    const response = await completeOidcCallback(start.state, start.cookieHeader);
+    expect(new URL(response.headers.get("location")!).searchParams.get("error")).toContain(
+      "invite-only",
+    );
+    expect(await db.select().from(schema.session)).toHaveLength(0);
+    expect((await db.select().from(schema.account))[0]!.accountId).toBe(accountId);
+  });
+
+  it("uses the existing subject binding when the IdP changes its verified email", async () => {
+    const accountId = JSON.stringify([ISSUER, "sub-admin"]);
+    await db.insert(schema.account).values({
+      id: "oidc_admin_account",
+      userId: "admin_validation",
+      providerId: "oidc",
+      accountId,
+    });
+    idpUserInfo = idpProfile({
+      sub: "sub-admin",
+      email: "changed@example.test",
+      email_verified: true,
+    });
+    const start = await startOidcSignIn();
+    const response = await completeOidcCallback(start.state, start.cookieHeader);
+    expect(response.headers.get("location")).toBe("http://localhost:3001/projects");
+    expect((await db.select().from(schema.session))[0]!.userId).toBe("admin_validation");
+    expect((await db.select().from(schema.account))[0]!.accountId).toBe(accountId);
+    expect((await db.select().from(schema.user))[0]!.email).toBe("admin@example.test");
+  });
+
+  it("cannot link another user's OIDC account through the shared linking endpoint", async () => {
+    await provisionUser({
+      id: "other_user",
+      name: "Other",
+      email: "other@example.test",
+      role: "user",
+    });
+    await db.insert(schema.account).values({
+      id: "other_oidc_account",
+      userId: "other_user",
+      providerId: "oidc",
+      accountId: JSON.stringify([ISSUER, "sub-other"]),
+    });
+    const start = await startOidcSignIn();
+    const signedIn = await completeOidcCallback(start.state, start.cookieHeader);
+    const sessionCookie = signedIn.headers
+      .getSetCookie()
+      .map((cookie) => cookie.split(";")[0]!)
+      .find((cookie) => cookie.startsWith("openship.session_token="));
+    expect(sessionCookie).toBeTruthy();
+    const link = await auth.handler(
+      new Request("http://localhost:4000/api/auth/oauth2/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: sessionCookie! },
+        body: JSON.stringify({ providerId: "oidc", callbackURL: "http://localhost:3001/projects" }),
+      }),
+    );
+    expect(link.status).toBe(200);
+    const authorizationUrl = new URL(((await link.json()) as { url: string }).url);
+    nonce = authorizationUrl.searchParams.get("nonce")!;
+    const stateCookie = link.headers
+      .getSetCookie()
+      .map((cookie) => cookie.split(";")[0])
+      .join("; ");
+    idpUserInfo = idpProfile({
+      sub: "sub-other",
+      email: "other@example.test",
+      email_verified: true,
+    });
+    const response = await completeOidcCallback(
+      authorizationUrl.searchParams.get("state")!,
+      stateCookie,
+    );
+    expect(new URL(response.headers.get("location")!).searchParams.get("error")).toBe(
+      "account_already_linked_to_different_user",
+    );
+    expect(
+      (
+        await db.select().from(schema.account).where(eq(schema.account.id, "other_oidc_account"))
+      )[0]!.userId,
+    ).toBe("other_user");
+    expect((await db.select().from(schema.session)).map((session) => session.userId)).toEqual([
+      "admin_validation",
+    ]);
+  });
+
+  it("keeps Better Auth's callback origin validation", async () => {
+    const context = await auth.$context;
+    // Better Auth skips origin checks under NODE_ENV=test. Exercise the
+    // production policy without changing the shared instance configuration.
+    const previous = context.skipOriginCheck;
+    context.skipOriginCheck = false;
+    try {
+      const response = await auth.handler(
+        new Request("http://localhost:4000/api/auth/sign-in/oauth2", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            providerId: "oidc",
+            callbackURL: "https://untrusted.example.test/steal",
+          }),
+        }),
+      );
+      expect(response.status).toBe(403);
+      expect(await db.select().from(schema.verification)).toHaveLength(0);
+      expect(tokenRequests).toBe(0);
+    } finally {
+      context.skipOriginCheck = previous;
+    }
+  });
+
+  it("does not reuse the same subject from a previously configured issuer", async () => {
+    const accountId = JSON.stringify(["https://previous.example.test", "sub-admin"]);
+    await db.insert(schema.account).values({
+      id: "oidc_previous_account",
+      userId: "admin_validation",
+      providerId: "oidc",
+      accountId,
+    });
+    idpUserInfo = idpProfile({
+      sub: "sub-admin",
+      email: "different@example.test",
+      email_verified: true,
+    });
+    const start = await startOidcSignIn();
+    const response = await completeOidcCallback(start.state, start.cookieHeader);
+    expect(new URL(response.headers.get("location")!).searchParams.get("error")).toContain(
+      "invite-only",
+    );
+    expect(await db.select().from(schema.session)).toHaveLength(0);
+    expect((await db.select().from(schema.account))[0]!.accountId).toBe(accountId);
+  });
+
+  it.each(["missing cookie", "expired state"])(
+    "rejects %s before exchanging an authorization code",
+    async (reason) => {
+      const start = await startOidcSignIn();
+      if (reason === "expired state")
+        await db.update(schema.verification).set({ expiresAt: new Date(Date.now() - 1000) });
+      const response = await completeOidcCallback(
+        start.state,
+        reason === "missing cookie" ? "" : start.cookieHeader,
+      );
+      expect(new URL(response.headers.get("location")!).searchParams.get("error")).toBeTruthy();
+      expect(tokenRequests).toBe(0);
+      expect(await db.select().from(schema.session)).toHaveLength(0);
+    },
+  );
 
   it("rejects a replayed state before a second token exchange", async () => {
     const start = await startOidcSignIn();

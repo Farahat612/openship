@@ -7,6 +7,8 @@ beforeEach(() => {
   vi.stubEnv("CLOUD_MODE", "false");
   vi.stubEnv("DEPLOY_MODE", "docker");
   vi.stubEnv("INTERNAL_TOKEN", "test-internal-token-0000000000000000000000000000");
+  vi.stubEnv("BETTER_AUTH_SECRET", "oidc-boot-test-secret-00000000000000000000000000000000");
+  vi.stubEnv("BILLING_ENABLED", "false");
 });
 
 afterEach(() => {
@@ -15,6 +17,18 @@ afterEach(() => {
 });
 
 describe("OIDC issuer boot validation", () => {
+  it.each([
+    { target: "local", cloudMode: "true" },
+    { target: "local-saas", cloudMode: "false" },
+    { target: "cloud-saas", cloudMode: "false" },
+  ])("ignores self-hosted OIDC configuration on Cloud: %j", async ({ target, cloudMode }) => {
+    vi.stubEnv("OPENSHIP_TARGET", target);
+    vi.stubEnv("CLOUD_MODE", cloudMode);
+    vi.stubEnv("OIDC_ISSUER", "http://user:password@idp.example.com");
+    const { selfHostedOidcAllowed } = await import("@repo/platform/engine/config/env");
+    expect(selfHostedOidcAllowed).toBe(false);
+  });
+
   it.each([
     "http://idp.example.com",
     "http://localhost:9000",

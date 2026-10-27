@@ -525,6 +525,9 @@ type Env = z.infer<typeof envSchema>;
 export const env: Env = envSchema.parse(process.env);
 assertCloudBillingEnvironment(env, runtimeTarget.api);
 
+/** Instance-wide OIDC is for self-hosted local accounts, never the Cloud SaaS. */
+export const selfHostedOidcAllowed = runtimeTarget.selfHosted && !env.CLOUD_MODE;
+
 /**
  * One configuration verdict shared by auth mode resolution, capabilities,
  * webhook routing and boot validation. A self-hosted App is intentionally an
@@ -782,7 +785,7 @@ if (env.OPENSHIP_ADVERTISED_ORIGIN) {
 // requests to `${OIDC_ISSUER}/.well-known/openid-configuration` fail fast at boot.
 // Production requires HTTPS. Development/test HTTP is limited to loopback.
 // Discovered endpoints are checked again at runtime.
-if (env.OIDC_ISSUER) {
+if (selfHostedOidcAllowed && env.OIDC_ISSUER) {
   const raw = env.OIDC_ISSUER.trim();
   if (raw) {
     let parsed: URL;

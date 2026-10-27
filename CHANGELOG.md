@@ -6,10 +6,12 @@ Runtime security notices use the signed feed published from `security-advisories
 
 ## Unreleased
 
-- **Support verified OIDC sign-in** — discover a configured identity provider and
+- **Support verified self-hosted OIDC sign-in** — discover a configured identity provider and
   verify signed ID tokens, issuer, audience, expiry and sign-in nonce before
   creating sessions. Preserve invitation and two-factor checks, require matching
-  UserInfo subjects, and refuse insecure or redirected provider endpoints (#1489).
+  UserInfo subjects, and refuse insecure or redirected provider endpoints. Require
+  verified email, scope accounts to the issuer and exact subject, and keep instance
+  OIDC disabled on Openship Cloud and outside local-account auth mode (#1489).
 
 - **Keep BuildKit sessions alive** — answer Docker’s session health checks so
   builds can use optional secret mounts after long install/build steps. Close

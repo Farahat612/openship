@@ -54,6 +54,11 @@ provider (Authentik, Keycloak, Okta, Microsoft Entra ID, Google Workspace) via e
   issuers and endpoints must use HTTPS; local development permits HTTP only on loopback.
   Redirects from discovery, token, key and UserInfo endpoints are refused.
 
+Generic OIDC is available only on a self-hosted instance using local accounts
+(`OPENSHIP_AUTH_MODE=local`). Openship Cloud ignores these settings and keeps its
+existing login providers. Account-free mode and instances that delegate login to
+Cloud reject OIDC sign-in and account-linking requests, including direct API calls.
+
 ID tokens must have a valid asymmetric signature from the issuer’s JWKS, the correct issuer and
 client audience, valid expiry and issuance times, and the matching nonce. Multiple audiences require
 a matching authorized party (`azp`). If profile claims come from UserInfo, its subject must match the
@@ -70,14 +75,19 @@ use that origin in place of `https://openship.example.com`.
 
 Account-linking and sign-up rules for OIDC:
 
-- **Verified email required for account linking:** Openship links an OIDC login to an existing user
-  with the same email only when the IdP returns `email_verified: true`. If `email_verified` is `false`
-  or omitted, Openship refuses to link to an existing account and does not mark the email verified.
+- **Verified email required:** The IdP must return boolean `email_verified: true` for OIDC sign-in,
+  account linking and invitation-based signup. An unverified address cannot claim an invitation
+  or an existing account. Check the provider's email scope mapping; Authentik's default email
+  mapping may need configuring to return its verified email claim.
+- **Issuer-scoped accounts:** Openship identifies OIDC accounts by the exact issuer and subject
+  pair. Changing the IdP does not transfer an old subject's login to the new issuer. A verified
+  email can still link through the existing account-linking rules; IdP roles and groups never
+  grant Openship permissions.
 - **Invite-only sign-up stays enforced:** Self-hosted instances remain invite-only after the initial
   admin is created. A new OIDC user must have a pending, unexpired invitation from an instance admin;
   there is no automatic email-domain join.
 - **Zero-auth mode:** When `authMode` is `"none"`, the OIDC provider is not advertised, and
-  `POST /api/auth/sign-in/oauth2` plus `GET /api/auth/oauth2/callback/oidc` are rejected. GitHub and
+  OIDC sign-in, linking and callback endpoints are rejected. GitHub and
   Google stay unadvertised the same way they already are in that mode.
 - **Deprovisioning (v1 limitation):** Removing a user at the IdP blocks future OIDC sign-ins, but
   there is no SCIM push and existing Openship sessions remain valid until they expire (30 days by

@@ -119,17 +119,17 @@ Completed items and remaining follow-ups:
       name for `oidc`). The engine's `auth-providers.ts` supplies the same
       credential predicate to Better Auth; login and registration render only
       supported, advertised providers.
-- [x] **Account linking.** `"oidc"` is kept out of `accountLinking.trustedProviders`
-      and `mapOidcProfileToUser` coerces `emailVerified` strictly from
-      `profile.email_verified === true`, so Better Auth links an existing user by
-      email only when the IdP asserts `email_verified: true`.
+- [x] **Account linking.** `"oidc"` stays out of `accountLinking.trustedProviders`.
+      Sign-in and linking require boolean `email_verified: true`; an unverified
+      email cannot claim an invitation. Accounts bind the exact issuer/subject
+      pair. Better Auth continues to handle account linking and sessions.
 - [x] **Where an SSO user LANDS (v1 invite-only gate).** `databaseHooks.user.create.before`
       in `auth.ts` enforces invite-only sign-up on self-hosted for the `oidc`
       provider just like GitHub/Google (no email-domain auto-join). Follow-up if
       requested: default team org auto-join or domain allowlists.
-- [x] **Zero-auth interaction.** `authMode === "none"` instances omit `oidc` from
-      `authProviders` and reject `/api/auth/sign-in/oauth2` and
-      `/api/auth/oauth2/callback/*` with `403`.
+- [x] **Instance boundary.** Generic OIDC is self-hosted only; Cloud ignores its
+      settings. Instances without local accounts reject OIDC sign-in, linking
+      and callbacks through the shared account-security mode guard.
 - [x] **Deprovisioning documented as v1 gap.** Removing someone from the IdP does
       not end their existing Openship session (`session.expiresIn` is 30 days) and
       there is no SCIM in v1; documented in `/docs/security/auth`.
