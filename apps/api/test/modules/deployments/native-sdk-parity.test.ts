@@ -178,6 +178,7 @@ vi.mock("@repo/db", () => ({
 }));
 vi.mock("@repo/platform/engine/config/env", () => ({
   env: h.env,
+  get selfHostedOidcAllowed() { return !h.env.CLOUD_MODE; },
   trustedOrigins: [],
   runtimeTargetId: "local",
   cloudRuntimeTarget: { dashboard: "https://openship.test", api: "https://api.openship.test" },
